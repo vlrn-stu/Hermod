@@ -1,0 +1,85 @@
+---
+# Hermod Ansible variables. Override in inventory or with -e on the command line.
+
+# ---------------------------------------------------------------------------
+# Git source
+# ---------------------------------------------------------------------------
+# Placeholder git remote. Replace with real URL before use.
+hermod_git_remote: "git@PLACEHOLDER:REPLACE_WITH_YOUR_USER/hermod.git"
+hermod_git_branch: "main"
+hermod_install_path: "/opt/hermod"
+
+# ---------------------------------------------------------------------------
+# MicroK8s
+# ---------------------------------------------------------------------------
+microk8s_channel: "1.30/stable"
+microk8s_addons:
+  - dns
+  - storage
+  - registry
+  - ingress
+  - metrics-server
+
+# ---------------------------------------------------------------------------
+# Target user (must have sudo; the snap/kubectl group membership is applied to this user)
+# ---------------------------------------------------------------------------
+hermod_user: "hermod"
+
+# ---------------------------------------------------------------------------
+# System settings
+# ---------------------------------------------------------------------------
+hermod_timezone: "Etc/UTC"
+hermod_hostname: ""   # leave empty to keep the existing hostname
+
+# Swap: size in MB (Raspberry Pi 5 8 GB RAM, 2 GB swap is a safe minimum)
+hermod_swap_size_mb: 2048
+hermod_swap_path: "/swapfile"
+
+# ---------------------------------------------------------------------------
+# Kubernetes deploy
+# ---------------------------------------------------------------------------
+# Kustomize overlay to apply (relative to hermod_install_path/Hermod/kubernetes)
+hermod_kustomize_overlay: "base"
+
+# Namespace where all Hermod workloads run
+hermod_namespace: "hermod"
+
+# Pods that must be Running before healthchecks pass.
+# These match the 'app' label on each Deployment/StatefulSet.
+hermod_expected_pods:
+  - nanomq
+  - postgres
+  - hermod-coordinator
+  - zigbee2mqtt
+  - lora2mqtt
+  - wifi2mqtt
+  - vault42
+  # ble2mqtt disabled upstream — see kubernetes/base/kustomization.yaml
+
+# How long (seconds) to wait for pods to become Running
+hermod_pod_wait_timeout: 300
+
+# ---------------------------------------------------------------------------
+# Ports exposed to the host (NodePort / port-forward)
+# ---------------------------------------------------------------------------
+hermod_coordinator_port: 42069
+hermod_mqtt_port: 1883
+
+# ---------------------------------------------------------------------------
+# Rollback deployment list
+# Used by update.yml to undo the last rollout when pods fail to become ready.
+# Must be kept in sync with the Deployments in the Hermod Kubernetes manifests.
+# ---------------------------------------------------------------------------
+hermod_rollback_deployments:
+  - hermod-coordinator
+  - lora2mqtt
+  - zigbee2mqtt
+  - wifi2mqtt
+  - nanomq
+  # ble2mqtt disabled — see hermod_expected_pods above
+
+# ---------------------------------------------------------------------------
+# Scheduled updater (ansible-pull based systemd service)
+# ---------------------------------------------------------------------------
+hermod_updater_enabled: false
+hermod_updater_schedule: "OnCalendar=daily"

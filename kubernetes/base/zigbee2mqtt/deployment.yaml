@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zigbee2mqtt
+  namespace: hermod
+  labels:
+    app: zigbee2mqtt
+    component: protocol-translator
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): z2m holds /dev/ttyUSB0 exclusively;
+  # a new pod spawned alongside the old one fails ezsp init with
+  # "Cannot lock port" and the rollout deadlocks.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zigbee2mqtt
+  template:
+    metadata:
+      labels:
+        app: zigbee2mqtt
+        component: protocol-translator
+    spec:
+      initContainers:
+        # Seed configuration.yaml only on first boot. z2m rewrites this
+        # file to persist pairings/pan_id/network_key, so an unconditional
+        # cp wipes every pairing on each restart; -n preserves it.
+        - name: init-config
+          image: busybox:1.36
+          command: ['sh', '-c', 'cp -n /config/configuration.yaml /app/data/configuration.yaml && echo "seeded" || echo "already present, skipped"']
+          volumeMounts:
+            - name: zigbee2mqtt-data
+              mountPath: /app/data
+            - name: zigbee2mqtt-config
+              mountPath: /config
+      containers:
+        - name: zigbee2mqtt
+          image: koenkk/zigbee2mqtt:latest
+          # IfNotPresent: upstream image is pre-pulled into the kubelet's
+          # cache; avoids Docker Hub rate-limit and works offline on Pi.
+          # The "no IfNotPresent for OUR images" rule only applies to
+          # hermod-coordinator + lora2mqtt where we control versioning.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # TZ controls only zigbee2mqtt's own log timestamps; payload
+            # timestamps are coordinator-side. Override per-deployment if
+            # operators want logs in their local time.
+            - name: TZ
+              value: "Etc/UTC"
+            # z2m overrides any configuration.yaml field via
+            # ZIGBEE2MQTT_CONFIG_<SECTION>_<KEY> envs. Sent unconditionally
+            # so a broker flip to allow_anonymous=false works without edit.
+            # Per-translator user from hermod-mqtt-users so the ACL rule
+            # `username = "zigbee2mqtt"` matches and publishes to zigbee/#
+            # are accepted. The legacy hermod-secrets:mqtt-username holds
+            # `hermod-service`, whose ACL only allows zigbee/+/set, so
+            # every telemetry publish was silently dropped at the broker.
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: zigbee2mqtt-username
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: zigbee2mqtt-password
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: zigbee2mqtt-data
+              mountPath: /app/data
+            - name: zigbee-device
+              mountPath: /dev/ttyUSB0
+          securityContext:
+            privileged: true  # Required for USB device access
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 60
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: zigbee2mqtt-data
+          persistentVolumeClaim:
+            claimName: zigbee2mqtt-data
+        - name: zigbee2mqtt-config
+          configMap:
+            name: zigbee2mqtt-config
+        - name: zigbee-device
+          hostPath:
+            path: /dev/ttyUSB0
+            type: CharDevice
+      nodeSelector:
+        hermod.io/zigbee: "true"  # Deploy only on nodes with ZigBee dongle
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zigbee2mqtt
+  namespace: hermod
+  labels:
+    app: zigbee2mqtt
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: zigbee2mqtt

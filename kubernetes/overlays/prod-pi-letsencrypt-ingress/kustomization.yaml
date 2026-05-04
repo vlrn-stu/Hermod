@@ -1,0 +1,36 @@
+# prod-pi-letsencrypt-ingress — ACTIVE edge-TLS overlay.
+#
+# !!! THIS OVERLAY EXPOSES THE COORDINATOR PUBLICLY !!!
+# Apply only when:
+#   * the passive `prod-pi-letsencrypt` overlay has successfully issued
+#     a certificate (check `kubectl describe certificate ...`)
+#   * the host's DNS A record actually points at the Pi
+#   * you are ready for the world to reach hermod.<your-domain>
+#
+# This overlay inherits the cert-only base and adds:
+#   * an nginx Ingress that terminates the public TLS at the cluster
+#     edge and re-encrypts to the Coord pod over HTTPS using the
+#     internal CA chain
+#   * Coordinator HSTS preload + IncludeSubDomains flipped on (now safe
+#     because the cert is publicly trusted; rationale at
+#     src/Hermod.Coordinator/Program.cs:88-93)
+#
+# In-cluster mTLS (Coord <-> NanoMQ <-> Postgres <-> Vault42) keeps
+# using the internal CA. See SECURITY.md §3.5 for the two-PKI rationale.
+#
+# Deploy: `kubectl apply -k kubernetes/overlays/prod-pi-letsencrypt-ingress/`
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+resources:
+  - ../prod-pi-letsencrypt
+  - coord-ingress.yaml
+
+patches:
+  - path: coord-hsts-preload.yaml
+    target:
+      kind: Deployment
+      name: hermod-coordinator

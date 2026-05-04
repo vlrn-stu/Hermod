@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nanomq
+  namespace: hermod
+  labels:
+    app: nanomq
+    component: message-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nanomq
+  template:
+    metadata:
+      labels:
+        app: nanomq
+        component: message-broker
+    spec:
+      initContainers:
+        # Render nanomq.conf with HTTP admin creds from
+        # nanomq-http-admin Secret. Without this they'd live in the
+        # ConfigMap (checked into git).
+        - name: render-config
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sed \
+                -e "s|__HTTP_USER__|${NANOMQ_HTTP_USER}|g" \
+                -e "s|__HTTP_PASSWORD__|${NANOMQ_HTTP_PASSWORD}|g" \
+                /tmpl/nanomq.conf.tmpl > /rendered/nanomq.conf
+              # Pre-staged password file for the deny-by-default flip;
+              # produced-but-unused until auth.password is enabled in
+              # nanomq.conf.tmpl. Single shared credential matches what
+              # every translator sends from hermod-secrets.
+              printf '%s:%s\n' "${NANOMQ_MQTT_USER}" "${NANOMQ_MQTT_PASSWORD}" > /rendered/nanomq_pwd.conf
+              chmod 0600 /rendered/nanomq_pwd.conf
+              echo "nanomq.conf rendered ($(wc -c </rendered/nanomq.conf) bytes); nanomq_pwd.conf staged for future deny-by-default"
+          env:
+            - name: NANOMQ_HTTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: nanomq-http-admin
+                  key: http-user
+            - name: NANOMQ_HTTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nanomq-http-admin
+                  key: http-password
+            - name: NANOMQ_MQTT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: nanomq-credentials
+                  key: username
+            - name: NANOMQ_MQTT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nanomq-credentials
+                  key: password
+          volumeMounts:
+            - name: nanomq-config-template
+              mountPath: /tmpl
+              readOnly: true
+            - name: nanomq-config-rendered
+              mountPath: /rendered
+      containers:
+        - name: nanomq
+          image: emqx/nanomq:0.21-slim
+          ports:
+            - name: mqtt
+              containerPort: 1883
+              protocol: TCP
+            - name: mqtt-tls
+              containerPort: 8883
+              protocol: TCP
+            - name: http-api
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: NANOMQ_BROKER_URL
+              value: "nmq-tcp://0.0.0.0:1883"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          volumeMounts:
+            # Rendered config (admin creds substituted), overlaid as a
+            # single file via subPath at the image's expected path.
+            - name: nanomq-config-rendered
+              mountPath: /etc/nanomq.conf
+              subPath: nanomq.conf
+            # Pre-staged password file; mounted so the deny-by-default
+            # flip is a one-line config edit.
+            - name: nanomq-config-rendered
+              mountPath: /etc/nanomq_pwd.conf
+              subPath: nanomq_pwd.conf
+            - name: nanomq-data
+              mountPath: /var/lib/nanomq
+          # Probe :8081 (HTTP API), not :1883 — MQTT framing logs
+          # `nego error rv:(31)` on every zero-byte TCP probe.
+          # Requires the `listeners.ws` stub in the ConfigMap.
+          livenessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: nanomq-config-template
+          configMap:
+            name: nanomq-config
+        - name: nanomq-config-rendered
+          emptyDir: {}
+        - name: nanomq-data
+          persistentVolumeClaim:
+            claimName: nanomq-data

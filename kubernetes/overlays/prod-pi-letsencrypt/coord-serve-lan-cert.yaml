@@ -1,0 +1,33 @@
+# Repoint the Coord's HTTPS listener at the publicly-trusted LE cert in
+# the hermod-public-tls Secret (issued by the parent overlay). The base
+# tls-server-src volume sources from hermod-coord-server-tls (internal
+# CA leaf) — this patch swaps the secret name. The existing init
+# container chain (prep-tls) still copies cert+key into the writable
+# tls-server-real emptyDir; Kestrel's ServerCertificateSelector hot-
+# reloads on next handshake.
+#
+# Effect: LAN clients reaching the Coord (NodePort :42069 on host
+# 10.42.0.58, or via local DNS pointing hermod.42-v.com at the same IP)
+# now see a publicly-trusted Let's Encrypt cert with no browser warning.
+# In-cluster mTLS to NanoMQ / Postgres / Vault42 is unchanged — those
+# use separate client cert mounts (tls-client-src) bound to the internal
+# CA chain.
+#
+# Renewal note: cert-manager updates the hermod-public-tls Secret every
+# ~60 days. The tls-server-src Secret mount inside the pod auto-syncs,
+# but tls-server-real (emptyDir) is written once at init — so the
+# running pod keeps serving the OLD cert until rollout restart. Schedule
+# `kubectl -n hermod-prod rollout restart deploy/hermod-coordinator`
+# after each renewal, OR skip this overlay and mount the Secret
+# directly (requires removing the prep-tls indirection in base).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermod-coordinator
+spec:
+  template:
+    spec:
+      volumes:
+        - name: tls-server-src
+          secret:
+            secretName: hermod-public-tls

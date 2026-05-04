@@ -1,0 +1,49 @@
+# prod-pi-letsencrypt — PASSIVE / cert-only edge-TLS overlay (default).
+#
+# Inherits the full prod-pi stack. Adds a cert-manager ClusterIssuer
+# and a Certificate request so that a publicly-trusted Let's Encrypt
+# cert is issued and stored in the `hermod-coordinator-public-tls`
+# Secret. NO Ingress is created — no traffic is exposed publicly by
+# this overlay alone.
+#
+# This is the safe default. It validates the whole acquisition pipeline
+# (cert-manager + ClusterIssuer + ACME challenge reachability) before
+# you flip the switch to actually serve public traffic.
+#
+# To go live, apply the sibling overlay:
+#
+#     kubernetes/overlays/prod-pi-letsencrypt-ingress/
+#
+# That overlay layers an Ingress (and HSTS preload) on top of this one.
+# The Ingress references the Secret created here.
+#
+# Prerequisites:
+#   1. cert-manager installed in the cluster
+#   2. Reachability for the chosen ACME challenge — see README.md
+#   3. cluster-issuer.yaml + coord-certificate.yaml: substitute the
+#      EMAIL_PLACEHOLDER and HOST_PLACEHOLDER strings
+#
+# Deploy: `kubectl apply -k kubernetes/overlays/prod-pi-letsencrypt/`
+# Verify: `kubectl -n hermod-prod describe certificate hermod-coordinator-public-tls`
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+resources:
+  - ../prod-pi
+  - cluster-issuer.yaml
+
+# coord-serve-lan-cert.yaml is intentionally NOT applied. Repointing
+# tls-server-src at the LE Secret breaks the kubelet startup probe
+# (single-cert Kestrel + LE-only-SAN cert returns the wrong cert when
+# the probe connects by pod IP, the probe TLS handshake hangs, pod
+# never goes Ready). The clean fix needs a SNI-based dual-cert setup
+# (internal CA for IP/cluster.local SNI, LE for hermod.<domain>) which
+# is a Coord code change, not just a manifest patch.
+#
+# coord-certificate.yaml is also NOT applied — it carries placeholder
+# values that cert-manager rejects. Operator should provision their
+# Certificate via `hermod.sh cert request prod-pi <hostname>` instead,
+# which writes a fully-substituted Certificate manifest from the CLI.

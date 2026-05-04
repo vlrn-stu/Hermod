@@ -1,0 +1,25 @@
+# Cloudflare Zero Trust configuration marker.
+#
+# This ConfigMap MUST be edited before applying the overlay. Both
+# values come from your Cloudflare Zero Trust dashboard:
+#
+#   * CF_ACCESS_AUD: the Application AUD claim of the Access app
+#     guarding hermod.<your-domain>. Find it under
+#     Zero Trust -> Access -> Applications -> <your app> -> Overview ->
+#     Application Audience (AUD) Tag.
+#
+#   * CF_ACCESS_TEAM_DOMAIN: your team's *.cloudflareaccess.com domain.
+#     Find it under Zero Trust -> Settings -> General -> Team Domain.
+#
+# The cloudflared Deployment ships with an init container that refuses
+# to start while either value is still the literal placeholder string.
+# This is the "must be explicitly set" enforcement — Zero Trust mode
+# cannot be applied by accident.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflare-zero-trust-config
+data:
+  CF_ACCESS_AUD: "REPLACE_WITH_CF_ACCESS_APP_AUD"
+  CF_ACCESS_TEAM_DOMAIN: "REPLACE_WITH_TEAM_DOMAIN"

@@ -1,0 +1,42 @@
+---
+# hermod_images role defaults.
+#
+# Two clearly-separated paths for image provisioning:
+#
+#   dev  — build arm64 images on the control node via `podman build --arch arm64`,
+#          save to tar, scp to the Pi, import into microk8s containerd.
+#          No registry required, no internet needed on the Pi during deploy.
+#
+#   prod — images pulled from a registry (default: ghcr.io/vlrn-stu) at kubelet
+#          pull time. Requires images to be pre-pushed. Internet needed on Pi.
+#
+# Flip with: -e hermod_image_source=prod
+#
+# Vault42 is always pulled from ghcr.io/42-v/vault42 at the version pinned
+# in kubernetes/base/vault42/deployment.yaml.
+
+hermod_image_source: "dev"   # one of: dev, prod
+
+# --- prod-path config ---
+hermod_image_registry: "ghcr.io/vlrn-stu"
+hermod_image_tag: "latest"
+
+# --- dev-path config ---
+
+# Host tmp dir for cross-arch built image tarballs (control node).
+hermod_images_tmp_dir: "/tmp/hermod-images-build"
+
+# .NET SDK image used to pack Vault.AspNetCore nupkg.
+hermod_dotnet_sdk_image: "mcr.microsoft.com/dotnet/sdk:10.0"
+
+# Images to build on control + import on Pi. Context/dockerfile paths are
+# expressed relative to the control-node source trees.
+hermod_dev_images:
+  - name: "hermod-coordinator"
+    tag: "latest"
+    context: "{{ hermod_source_dir }}/src"
+    dockerfile: "{{ hermod_source_dir }}/src/Hermod.Coordinator/Dockerfile"
+  - name: "lora2mqtt"
+    tag: "latest"
+    context: "{{ hermod_source_dir }}/src"
+    dockerfile: "{{ hermod_source_dir }}/src/LoRa2MQTT/LoRa2MQTT.Service/Dockerfile"

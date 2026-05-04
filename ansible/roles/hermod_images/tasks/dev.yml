@@ -1,0 +1,186 @@
+---
+# dev path — build arm64 images on the control node, scp to Pi, import into microk8s.
+
+- name: hermod_images/dev | Pre-flight checks on control node
+  delegate_to: localhost
+  become: false
+  block:
+    - name: hermod_images/dev | podman must be available
+      ansible.builtin.command: podman --version
+      register: _podman_check
+      changed_when: false
+
+    - name: hermod_images/dev | qemu-aarch64 binfmt must be registered
+      ansible.builtin.stat:
+        path: /proc/sys/fs/binfmt_misc/qemu-aarch64
+      register: _binfmt_stat
+
+    - name: hermod_images/dev | Fail if qemu-user missing
+      ansible.builtin.fail:
+        msg: "qemu-user-static not registered — install qemu-user-static + run: systemctl restart systemd-binfmt"
+      when: not _binfmt_stat.stat.exists
+
+    - name: hermod_images/dev | Ensure tmp dir exists
+      ansible.builtin.file:
+        path: "{{ hermod_images_tmp_dir }}"
+        state: directory
+        mode: "0700"
+  tags: [images, dev]
+- name: hermod_images/dev | Create git-worktree staging dirs for images that need it
+  delegate_to: localhost
+  become: false
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: "hermod-build-{{ item.name }}-"
+  loop: "{{ hermod_dev_images | selectattr('use_git_worktree', 'defined') | selectattr('use_git_worktree') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _worktrees
+  tags: [images, dev]
+- name: hermod_images/dev | git worktree add HEAD (for images using clean checkout)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: git worktree add --force --detach {{ item.0.path }} HEAD
+    chdir: "{{ item.1.context }}"
+  loop: "{{ _worktrees.results | zip(hermod_dev_images | selectattr('use_git_worktree', 'defined') | selectattr('use_git_worktree') | list) | list }}"
+  loop_control:
+    label: "{{ item.1.name }} <- {{ item.0.path }}"
+  register: _wt_created
+  changed_when: true
+  when: _worktrees.results | length > 0
+  tags: [images, dev]
+- name: hermod_images/dev | Build arm64 images on control node
+  delegate_to: localhost
+  become: false
+  vars:
+    _wt_path: >-
+      {%- set wt = (_worktrees.results | default([]) | selectattr('item.name','equalto',item.name) | list) -%}
+      {{ wt[0].path if wt else '' }}
+    _build_ctx: "{{ _wt_path if _wt_path else item.context }}"
+    _build_df: "{{ _wt_path ~ '/Dockerfile' if _wt_path else item.dockerfile }}"
+  ansible.builtin.command:
+    cmd: >-
+      podman build
+      --arch arm64
+      --format=docker
+      -t {{ item.name }}:{{ item.tag }}
+      -f {{ _build_df }}
+      {{ _build_ctx }}
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }} (ctx: {{ _build_ctx }})"
+  register: _img_build
+  changed_when: true
+  tags: [images, dev]
+- name: hermod_images/dev | Remove git worktrees after build
+  delegate_to: localhost
+  become: false
+  ansible.builtin.shell:
+    cmd: |
+      cd "{{ item.1.context }}" && git worktree remove --force "{{ item.0.path }}" || rm -rf "{{ item.0.path }}"
+  loop: "{{ _worktrees.results | zip(hermod_dev_images | selectattr('use_git_worktree', 'defined') | selectattr('use_git_worktree') | list) | list }}"
+  loop_control:
+    label: "{{ item.1.name }}"
+  when: _worktrees.results | length > 0
+  failed_when: false
+  changed_when: true
+  tags: [images, dev]
+- name: hermod_images/dev | Remove stale tarballs before save
+  delegate_to: localhost
+  become: false
+  # podman's docker-archive format refuses to modify an existing tarball
+  # ("Error: docker-archive doesn't support modifying existing images"),
+  # so an interrupted previous run leaves files that block this one.
+  ansible.builtin.file:
+    path: "{{ hermod_images_tmp_dir }}/{{ item.name }}.tar"
+    state: absent
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  tags: [images, dev]
+
+- name: hermod_images/dev | Save images to tarballs
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: >-
+      podman save
+      --format=docker-archive
+      -o {{ hermod_images_tmp_dir }}/{{ item.name }}.tar
+      {{ item.name }}:{{ item.tag }}
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  changed_when: true
+  tags: [images, dev]
+- name: hermod_images/dev | Ensure target tmp dir on Pi
+  ansible.builtin.file:
+    path: "/var/tmp/hermod-images"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+  tags: [images, dev]
+- name: hermod_images/dev | Copy image tarballs to Pi
+  ansible.builtin.copy:
+    src: "{{ hermod_images_tmp_dir }}/{{ item.name }}.tar"
+    dest: "/var/tmp/hermod-images/{{ item.name }}.tar"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  become: true
+  tags: [images, dev]
+- name: hermod_images/dev | Import tarballs into microk8s containerd
+  ansible.builtin.command:
+    cmd: "microk8s ctr image import /var/tmp/hermod-images/{{ item.name }}.tar"
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  become: true
+  register: _img_import
+  changed_when: "'unpacking' in (_img_import.stdout | default(''))"
+  tags: [images, dev]
+- name: hermod_images/dev | Retag localhost/<name> -> docker.io/library/<name>
+  # `podman save | microk8s ctr import` lands under localhost/<name>:<tag>. K8s
+  # manifests reference the bare name which containerd normalises to
+  # docker.io/library/<name>:<tag>. Add that alias so kubelet's
+  # imagePullPolicy=Never matches.
+  ansible.builtin.command:
+    cmd: >-
+      microk8s ctr --namespace k8s.io images tag --force
+      localhost/{{ item.name }}:{{ item.tag }}
+      docker.io/library/{{ item.name }}:{{ item.tag }}
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  become: true
+  failed_when: false
+  changed_when: false
+  tags: [images, dev]
+- name: hermod_images/dev | Retag localhost/<name> -> bare <name> (some kustomize paths use it)
+  ansible.builtin.command:
+    cmd: >-
+      microk8s ctr --namespace k8s.io images tag --force
+      localhost/{{ item.name }}:{{ item.tag }}
+      {{ item.name }}:{{ item.tag }}
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  become: true
+  failed_when: false
+  changed_when: false
+  tags: [images, dev]
+- name: hermod_images/dev | Clean up tarballs on Pi
+  ansible.builtin.file:
+    path: "/var/tmp/hermod-images/{{ item.name }}.tar"
+    state: absent
+  loop: "{{ hermod_dev_images }}"
+  loop_control:
+    label: "{{ item.name }}:{{ item.tag }}"
+  become: true
+  tags: [images, dev]

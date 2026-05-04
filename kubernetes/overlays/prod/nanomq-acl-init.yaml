@@ -1,0 +1,38 @@
+# Render-script ConfigMap for the nanomq ACL init container. Contains
+# the shell script that substitutes per-user passwords from the
+# hermod-mqtt-users Secret into nanomq_pwd.conf, and the coord
+# username into nanomq_acl.conf (built from the .tmpl file in
+# templates/, registered as a configMapGenerator in kustomization.yaml).
+#
+# The Deployment-side wiring (init container, shared emptyDir, mount
+# into the nanomq main container) is in nanomq-acl-init-patch.yaml,
+# applied via the patches: list in kustomization.yaml — keeping the
+# ConfigMap (a resource) and the strategic merge patch (a patch) in
+# separate files avoids a kustomize ID conflict.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nanomq-acl-render-script
+data:
+  render.sh: |
+    #!/bin/sh
+    set -eu
+    # Substitute the per-user passwords into nanomq_pwd.conf. Keys
+    # quoted because hyphens in usernames (wifi2mqtt-bridge) trip
+    # NanoMQ's HOCON parser when unquoted.
+    cat > /shared/nanomq_pwd.conf <<EOF
+    "${COORD_USER}": "${COORD_PASS}"
+    "zigbee2mqtt": "${ZIGBEE_PASS}"
+    "lora2mqtt": "${LORA_PASS}"
+    "wifi2mqtt-bridge": "${WIFI_BRIDGE_PASS}"
+    "ble2mqtt": "${BLE_PASS}"
+    EOF
+    chmod 0440 /shared/nanomq_pwd.conf
+    # Substitute the coord username into the ACL template (other
+    # usernames are baked in literally since the coord one is the
+    # only operator-mutable identity).
+    sed "s/\${COORD_USER}/${COORD_USER}/g" \
+        /tpl/nanomq_acl.conf.tmpl > /shared/nanomq_acl.conf
+    chmod 0440 /shared/nanomq_acl.conf
+    echo "[nanomq-acl-init] rendered /shared/nanomq_pwd.conf and /shared/nanomq_acl.conf"

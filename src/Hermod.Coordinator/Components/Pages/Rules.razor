@@ -1,0 +1,1520 @@
+@page "/rules"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models.Rules
+@using Microsoft.AspNetCore.Authorization
+@using System.Text.RegularExpressions
+@attribute [Authorize]
+@inject IRulesService RulesService
+@inject IRulesEngine RulesEngine
+@inject ILogger<Rules> Logger
+@rendermode InteractiveServer
+@implements IDisposable
+
+<PageTitle>Rules - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_loadError))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_loadError</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="LoadRules">Retry</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">Translation Rules</h1>
+        <p class="text-muted mb-0">Create rules to automate cross-protocol communication</p>
+    </div>
+    <button class="btn btn-primary" @onclick="ShowAddRule">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+            <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+        </svg>
+        Add Rule
+    </button>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Total Rules</h6>
+                <h2 class="mb-0 fw-bold">@_rules.Count</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Active</h6>
+                <h2 class="mb-0 fw-bold">@_rules.Count(r => r.Enabled)</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Total Executions</h6>
+                <h2 class="mb-0 fw-bold">@_rules.Sum(r => r.ExecutionCount)</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Disabled</h6>
+                <h2 class="mb-0 fw-bold">@_rules.Count(r => !r.Enabled)</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Rules Grid -->
+<div class="row g-4">
+    @if (_rules.Any())
+    {
+        @foreach (var rule in _rules)
+        {
+            <div class="col-lg-6">
+                <div class="card rule-card border-0 shadow-sm h-100 @(rule.Enabled ? "" : "disabled")">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" checked="@rule.Enabled" @onchange="() => ToggleRule(rule)" style="transform: scale(1.3);">
+                                </div>
+                                <div>
+                                    <h5 class="card-title mb-1">@rule.Name</h5>
+                                    @if (!string.IsNullOrEmpty(rule.Description))
+                                    {
+                                        <p class="text-muted small mb-0">@rule.Description</p>
+                                    }
+                                </div>
+                            </div>
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                        <path d="M9.5 13a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm0-5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm0-5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/>
+                                    </svg>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><button class="dropdown-item" @onclick="() => EditRule(rule)">Edit</button></li>
+                                    <li><button class="dropdown-item" @onclick="() => ToggleRule(rule)">@(rule.Enabled ? "Disable" : "Enable")</button></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><button class="dropdown-item text-danger" @onclick="() => DeleteRule(rule.Id)">Delete</button></li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="rule-flow mb-3">
+                            <div class="flow-item source">
+                                <span class="flow-label">@GetTriggerLabel(rule.Trigger?.Type ?? TriggerType.OnMessage)</span>
+                                <code>@(rule.Trigger?.TopicPattern ?? "#")</code>
+                                @{
+                                    var conditions = rule.Conditions?.Conditions ?? new List<RuleCondition>();
+                                    var logic = rule.Conditions?.Logic ?? LogicOperator.All;
+                                }
+                                @if (conditions.Any(c => !string.IsNullOrEmpty(c.Property)))
+                                {
+                                    @foreach (var cond in conditions.Where(c => !string.IsNullOrEmpty(c.Property)).Take(2))
+                                    {
+                                        <span class="flow-condition">
+                                            <span class="property">@cond.Property</span>
+                                            <span class="operator">@GetOperatorSymbol(cond.Operator)</span>
+                                            <span class="value">@cond.Value</span>
+                                        </span>
+                                    }
+                                    @if (conditions.Count > 2)
+                                    {
+                                        <span class="flow-condition text-muted">+@(conditions.Count - 2) more (@(logic == LogicOperator.All ? "AND" : logic == LogicOperator.Any ? "OR" : "NOT"))</span>
+                                    }
+                                }
+                            </div>
+                            <div class="flow-arrow">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+                                    <path fill-rule="evenodd" d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8z"/>
+                                </svg>
+                            </div>
+                            <div class="flow-item target">
+                                <span class="flow-label">THEN</span>
+                                @{
+                                    var actionList = rule.Actions ?? new List<RuleAction>();
+                                }
+                                @if (actionList.Count == 0)
+                                {
+                                    <code>N/A</code>
+                                }
+                                else
+                                {
+                                    @foreach (var a in actionList.Take(3))
+                                    {
+                                        <code>@FormatActionSummary(a)</code>
+                                    }
+                                    @if (actionList.Count > 3)
+                                    {
+                                        <span class="flow-condition text-muted">+@(actionList.Count - 3) more action(s)</span>
+                                    }
+                                }
+                            </div>
+                        </div>
+
+                        @if (rule.Tags?.Any() == true)
+                        {
+                            <div class="mb-3">
+                                @foreach (var tag in rule.Tags)
+                                {
+                                    <span class="badge bg-secondary me-1">@tag</span>
+                                }
+                            </div>
+                        }
+
+                        <div class="rule-stats d-flex justify-content-between align-items-center">
+                            <div class="d-flex gap-4">
+                                <div class="stat">
+                                    <span class="stat-label">Executions</span>
+                                    <span class="stat-value">@rule.ExecutionCount</span>
+                                </div>
+                                <div class="stat">
+                                    <span class="stat-label">Last Run</span>
+                                    <span class="stat-value">@(rule.LastExecutedAt?.ToLocalTime().ToString("g") ?? "Never")</span>
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm btn-outline-primary" @onclick="() => EditRule(rule)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                        <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+                                    </svg>
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteRule(rule.Id)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                        <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+                                        <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    }
+    else
+    {
+        <div class="col-12">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body text-center py-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="currentColor" class="text-muted mb-3" viewBox="0 0 16 16">
+                        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                    <h5 class="text-muted">No rules configured</h5>
+                    <p class="text-muted mb-3">Create your first rule to start automating cross-protocol communication</p>
+                    <button class="btn btn-primary" @onclick="ShowAddRule">Create First Rule</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+<!-- Rule Editor Modal -->
+@if (_showRuleEditor)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background: var(--hermod-overlay); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content border-0 shadow-lg rule-editor-modal">
+                <div class="modal-header border-0 hermod-gradient-1 py-3">
+                    <div>
+                        <h5 class="modal-title text-white mb-0 fw-bold">
+                            @(_isNewRule ? "Create New Rule" : "Edit Rule")
+                        </h5>
+                        <div class="text-white-50 small">
+                            @(_isNewRule
+                                ? "Define a trigger, optional conditions, and the action to fire when the rule matches."
+                                : "Adjust the trigger, condition, or action. Saving updates the running rules engine immediately.")
+                        </div>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" @onclick="CloseEditor"></button>
+                </div>
+                <div class="modal-body">
+                    @if (_isNewRule && !_showAdvanced)
+                    {
+                        <!-- Quick Templates -->
+                        <div class="mb-4">
+                            <h6 class="fw-semibold mb-3">Quick Start Templates</h6>
+                            <div class="row g-2 rule-template-grid">
+                                <div class="col-md-4">
+                                    <button type="button" class="rule-template-card @(_appliedTemplate == RuleTemplate.ForwardMessage ? "active" : "")" @onclick="() => ApplyTemplate(RuleTemplate.ForwardMessage)">
+                                        <div class="fw-semibold">Forward Message</div>
+                                        <small class="text-muted">Route messages between protocols</small>
+                                    </button>
+                                </div>
+                                <div class="col-md-4">
+                                    <button type="button" class="rule-template-card @(_appliedTemplate == RuleTemplate.ThresholdAlert ? "active" : "")" @onclick="() => ApplyTemplate(RuleTemplate.ThresholdAlert)">
+                                        <div class="fw-semibold">Threshold Alert</div>
+                                        <small class="text-muted">Alert when value exceeds limit</small>
+                                    </button>
+                                </div>
+                                <div class="col-md-4">
+                                    <button type="button" class="rule-template-card @(_appliedTemplate == RuleTemplate.ProtocolBridge ? "active" : "")" @onclick="() => ApplyTemplate(RuleTemplate.ProtocolBridge)">
+                                        <div class="fw-semibold">Protocol Bridge</div>
+                                        <small class="text-muted">Bridge data across protocols</small>
+                                    </button>
+                                </div>
+                            </div>
+                            <hr class="my-4">
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrEmpty(_validationError))
+                    {
+                        <div class="alert alert-danger mb-3">@_validationError</div>
+                    }
+
+                    <!-- Basic Info -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-7">
+                            <label class="form-label fw-semibold">Rule name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control @(string.IsNullOrEmpty(_ruleName) && _validationAttempted ? "is-invalid" : "")"
+                                   @bind="_ruleName" placeholder="e.g. Living-room temperature alert" />
+                            <small class="text-muted">Shown in the rule list and on the topology graph.</small>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label fw-semibold">Priority</label>
+                            <input type="number" class="form-control" @bind="_rulePriority" min="1" max="1000" />
+                            <small class="text-muted">Lower number = evaluated first when several rules match the same topic.</small>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Description</label>
+                            <input type="text" class="form-control" @bind="_ruleDescription" placeholder="One line on what this rule does (visible to other operators)" />
+                        </div>
+                    </div>
+
+                    <div class="row g-4 rule-editor-twocol">
+                        <div class="col-lg-6">
+                            <!-- Source (Trigger) -->
+                            <div class="condition-section mb-4">
+                                <h6 class="section-title mb-3">
+                                    <span class="badge bg-info me-2">WHEN</span>
+                                    Source / Trigger
+                                </h6>
+                                <div class="row g-3">
+                                    <div class="col-12">
+                                        <label class="form-label">Trigger type</label>
+                                        <select class="form-select" @bind="_triggerType">
+                                            @foreach (var tt in Enum.GetValues<TriggerType>())
+                                            {
+                                                <option value="@tt">@GetTriggerTypeLabel(tt)</option>
+                                            }
+                                        </select>
+                                        <small class="text-muted">@GetTriggerTypeHint(_triggerType)</small>
+                                    </div>
+                                    @if (_triggerType is TriggerType.OnMessage or TriggerType.OnChange)
+                                    {
+                                        <div class="col-12">
+                                            <label class="form-label">Source Topic <span class="text-danger">*</span></label>
+                                            <input type="text" class="form-control @(string.IsNullOrEmpty(_sourceTopic) && _validationAttempted ? "is-invalid" : "")"
+                                                   @bind="_sourceTopic" placeholder="zigbee/sensor_living_room" />
+                                            <small class="text-muted">Use <code>+</code> for single-level wildcard, <code>#</code> for multi-level</small>
+                                        </div>
+                                    }
+                                    else if (_triggerType == TriggerType.OnSchedule)
+                                    {
+                                        <div class="col-12">
+                                            <label class="form-label">Cron Expression <span class="text-danger">*</span></label>
+                                            <input type="text" class="form-control @(string.IsNullOrEmpty(_cronExpression) && _validationAttempted ? "is-invalid" : "")"
+                                                   @bind="_cronExpression" placeholder="0 */5 * * *" />
+                                            <small class="text-muted">Standard 5-field cron. Example <code>0 */5 * * *</code> = every 5 minutes.</small>
+                                        </div>
+                                    }
+                                    else if (_triggerType == TriggerType.OnAvailability)
+                                    {
+                                        <div class="col-12">
+                                            <label class="form-label">Device Id or Wildcard Topic <span class="text-danger">*</span></label>
+                                            <input type="text" class="form-control @(string.IsNullOrEmpty(_sourceTopic) && _validationAttempted ? "is-invalid" : "")"
+                                                   @bind="_sourceTopic" placeholder="availability/zigbee/+" />
+                                            <small class="text-muted">Availability topic pattern; <code>+</code> / <code>#</code> wildcards supported.</small>
+                                        </div>
+                                    }
+                                    else if (_triggerType == TriggerType.OnChain)
+                                    {
+                                        <div class="col-12">
+                                            <div class="alert alert-info mb-0 small">
+                                                Chain triggers fire when another rule's <code>Chain</code> action references this rule by id.
+                                                No extra configuration here — give this rule a clear <strong>Rule Id</strong> (editable below) and
+                                                reference it from the upstream rule's action.
+                                            </div>
+                                        </div>
+                                        <div class="col-12">
+                                            <label class="form-label">Rule Id <span class="text-danger">*</span></label>
+                                            <input type="text" class="form-control @(string.IsNullOrEmpty(_chainFromRuleId) && _validationAttempted ? "is-invalid" : "")"
+                                                   @bind="_chainFromRuleId" placeholder="rule-post-alert-notifier" />
+                                            <small class="text-muted">Stable id upstream rules reference. Leave empty to auto-generate.</small>
+                                        </div>
+                                    }
+                                    else if (_triggerType == TriggerType.OnStartup)
+                                    {
+                                        <div class="col-12">
+                                            <div class="alert alert-info mb-0 small">
+                                                Startup rules fire once when the rules engine starts. No trigger input needed.
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+
+                            <!-- Condition (Optional) -->
+                            <div class="condition-section mb-4">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h6 class="section-title mb-0">
+                                        <span class="badge bg-secondary me-2">IF</span>
+                                        Conditions <span class="text-muted fw-normal">(optional)</span>
+                                    </h6>
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="hasCondition" @bind="_hasCondition">
+                                        <label class="form-check-label small" for="hasCondition">Add conditions</label>
+                                    </div>
+                                </div>
+                                @if (_hasCondition)
+                                {
+                                    @if (_conditions.Count > 1)
+                                    {
+                                        <div class="mb-3">
+                                            <label class="form-label">Match</label>
+                                            <div class="btn-group" role="group">
+                                                <input type="radio" class="btn-check" name="conditionLogic" id="logicAll"
+                                                       checked="@(_conditionLogic == LogicOperator.All)" @onchange="() => _conditionLogic = LogicOperator.All">
+                                                <label class="btn btn-outline-primary btn-sm" for="logicAll">ALL (AND)</label>
+                                                <input type="radio" class="btn-check" name="conditionLogic" id="logicAny"
+                                                       checked="@(_conditionLogic == LogicOperator.Any)" @onchange="() => _conditionLogic = LogicOperator.Any">
+                                                <label class="btn btn-outline-primary btn-sm" for="logicAny">ANY (OR)</label>
+                                                <input type="radio" class="btn-check" name="conditionLogic" id="logicNone"
+                                                       checked="@(_conditionLogic == LogicOperator.None)" @onchange="() => _conditionLogic = LogicOperator.None">
+                                                <label class="btn btn-outline-primary btn-sm" for="logicNone">NONE (NOT)</label>
+                                            </div>
+                                        </div>
+                                    }
+                                    @for (int i = 0; i < _conditions.Count; i++)
+                                    {
+                                        var index = i;
+                                        var cond = _conditions[i];
+                                        <div class="row g-2 mb-2 align-items-end">
+                                            @if (i > 0)
+                                            {
+                                                <div class="col-12">
+                                                    <span class="badge bg-info">@(_conditionLogic == LogicOperator.All ? "AND" : _conditionLogic == LogicOperator.Any ? "OR" : "NOT")</span>
+                                                </div>
+                                            }
+                                            <div class="col-12 col-sm-5">
+                                                @if (i == 0) { <label class="form-label">Property</label> }
+                                                <input type="text" class="form-control" @bind="cond.Property" placeholder="temperature" />
+                                            </div>
+                                            <div class="col-6 col-sm-3">
+                                                @if (i == 0) { <label class="form-label">Op</label> }
+                                                <select class="form-select" @bind="cond.Operator">
+                                                    <option value="@ComparisonOperator.GreaterThan">&gt;</option>
+                                                    <option value="@ComparisonOperator.LessThan">&lt;</option>
+                                                    <option value="@ComparisonOperator.Equals">=</option>
+                                                    <option value="@ComparisonOperator.NotEquals">!=</option>
+                                                    <option value="@ComparisonOperator.GreaterThanOrEquals">&gt;=</option>
+                                                    <option value="@ComparisonOperator.LessThanOrEquals">&lt;=</option>
+                                                    <option value="@ComparisonOperator.Contains">contains</option>
+                                                    <option value="@ComparisonOperator.Exists">exists</option>
+                                                    <option value="@ComparisonOperator.Changed">changed</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-5 col-sm-3">
+                                                @if (i == 0) { <label class="form-label">Value</label> }
+                                                <input type="text" class="form-control" @bind="cond.Value" placeholder="30" />
+                                            </div>
+                                            <div class="col-1">
+                                                @if (_conditions.Count > 1)
+                                                {
+                                                    <button type="button" class="btn btn-outline-danger btn-sm" @onclick="() => RemoveCondition(index)" title="Remove condition">×</button>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                    <button type="button" class="btn btn-outline-secondary btn-sm mt-2" @onclick="AddCondition">+ Add Condition</button>
+                                }
+                            </div>
+                        </div>
+
+                        <div class="col-lg-6">
+                            <!-- Actions (multi) -->
+                            <div class="action-section mb-4">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h6 class="section-title mb-0">
+                                        <span class="badge bg-success me-2">THEN</span>
+                                        Actions <span class="text-muted fw-normal small">(@_actions.Count)</span>
+                                    </h6>
+                                    <button type="button" class="btn btn-sm btn-outline-success" @onclick="AddAction" title="Add another action">+ Add Action</button>
+                                </div>
+                                @for (int i = 0; i < _actions.Count; i++)
+                                {
+                                    var ai = i;
+                                    var action = _actions[i];
+                                    <div class="rule-action-card mb-3">
+                                        <div class="d-flex justify-content-between align-items-center mb-2">
+                                            <div class="text-muted small fw-semibold">Step @(ai + 1)</div>
+                                            <div class="btn-group btn-group-sm">
+                                                @if (ai > 0)
+                                                {
+                                                    <button type="button" class="btn btn-link btn-sm p-1" @onclick="() => MoveAction(ai, -1)" title="Move up">↑</button>
+                                                }
+                                                @if (ai < _actions.Count - 1)
+                                                {
+                                                    <button type="button" class="btn btn-link btn-sm p-1" @onclick="() => MoveAction(ai, 1)" title="Move down">↓</button>
+                                                }
+                                                @if (_actions.Count > 1)
+                                                {
+                                                    <button type="button" class="btn btn-link btn-sm p-1 text-danger" @onclick="() => RemoveAction(ai)" title="Remove step">×</button>
+                                                }
+                                            </div>
+                                        </div>
+                                        <div class="row g-2">
+                                            <div class="col-12">
+                                                <label class="form-label small mb-1">Type</label>
+                                                <select class="form-select form-select-sm" @bind="action.Type">
+                                                    @foreach (var at in Enum.GetValues<ActionType>())
+                                                    {
+                                                        <option value="@at">@GetActionTypeLabel(at)</option>
+                                                    }
+                                                </select>
+                                                <small class="text-muted d-block mt-1">@GetActionTypeHint(action.Type)</small>
+                                            </div>
+                                            @switch (action.Type)
+                                            {
+                                                case ActionType.Publish:
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Target topic</label>
+                                                        <input type="text" class="form-control form-control-sm" @bind="action.Topic" placeholder="wifi/display/temperature" />
+                                                        <small class="text-muted">Use <code>@("{{deviceName}}")</code> for source device name; <code>@("{{source.foo}}")</code> for source payload values.</small>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <div class="form-check mb-1">
+                                                            <input class="form-check-input" type="checkbox" id="@($"passthrough-{ai}")" @bind="action.PassthroughPayload">
+                                                            <label class="form-check-label small" for="@($"passthrough-{ai}")">
+                                                                Pass through original payload
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    @if (!action.PassthroughPayload)
+                                                    {
+                                                        <div class="col-12">
+                                                            <label class="form-label small mb-1">Custom payload (JSON)</label>
+                                                            <textarea class="form-control form-control-sm font-monospace" @bind="action.PayloadJson" rows="2" placeholder='{"value": "{{source.temperature}}"}'></textarea>
+                                                        </div>
+                                                    }
+                                                    <div class="col-6">
+                                                        <label class="form-label small mb-1">QoS</label>
+                                                        <select class="form-select form-select-sm" @bind="action.QoS">
+                                                            <option value="0">0 (at most once)</option>
+                                                            <option value="1">1 (at least once)</option>
+                                                            <option value="2">2 (exactly once)</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="col-6 d-flex align-items-end">
+                                                        <div class="form-check">
+                                                            <input class="form-check-input" type="checkbox" id="@($"retain-{ai}")" @bind="action.Retain">
+                                                            <label class="form-check-label small" for="@($"retain-{ai}")">Retain</label>
+                                                        </div>
+                                                    </div>
+                                                    break;
+                                                case ActionType.Chain:
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Chain to rule (id)</label>
+                                                        <input type="text" class="form-control form-control-sm" @bind="action.ChainToRule" placeholder="rule-post-alert-notifier" />
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Delay (optional)</label>
+                                                        <input type="text" class="form-control form-control-sm" @bind="action.Delay" placeholder="5s, 1m, 2h — empty = fire immediately" />
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Forwarded data (JSON, accessible as <code>@("{{chain.*}}")</code>)</label>
+                                                        <textarea class="form-control form-control-sm font-monospace" @bind="action.ChainDataJson" rows="2" placeholder='{"event":"alert","level":"high"}'></textarea>
+                                                    </div>
+                                                    break;
+                                                case ActionType.SetState:
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Rule-local state (JSON; templates ok)</label>
+                                                        <textarea class="form-control form-control-sm font-monospace" @bind="action.SetStateJson" rows="2" placeholder='{"lastSeen":"{{now}}"}'></textarea>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Global state (JSON; visible to all rules)</label>
+                                                        <textarea class="form-control form-control-sm font-monospace" @bind="action.GlobalStateJson" rows="2" placeholder='{"alarmActive":true}'></textarea>
+                                                    </div>
+                                                    break;
+                                                case ActionType.Delay:
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Wait duration <span class="text-danger">*</span></label>
+                                                        <input type="text" class="form-control form-control-sm" @bind="action.Delay" placeholder="5s, 1m, 2h, 3d" />
+                                                    </div>
+                                                    break;
+                                                case ActionType.CancelDelay:
+                                                    <div class="col-12">
+                                                        <div class="alert alert-info mb-0 small py-2">Cancels any pending delayed action queued earlier in this rule.</div>
+                                                    </div>
+                                                    break;
+                                                case ActionType.Log:
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Message (templates ok)</label>
+                                                        <textarea class="form-control form-control-sm" @bind="action.LogMessage" rows="2" placeholder="Threshold exceeded for {{deviceName}}: {{source.temperature}}°C"></textarea>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Level</label>
+                                                        <select class="form-select form-select-sm" @bind="action.LogLevel">
+                                                            <option value="Information">Information</option>
+                                                            <option value="Debug">Debug</option>
+                                                            <option value="Warning">Warning</option>
+                                                            <option value="Error">Error</option>
+                                                        </select>
+                                                    </div>
+                                                    break;
+                                                case ActionType.Webhook:
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">URL <span class="text-danger">*</span></label>
+                                                        <input type="text" class="form-control form-control-sm" @bind="action.WebhookUrl" placeholder="https://hooks.example.com/path" />
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <label class="form-label small mb-1">Method</label>
+                                                        <select class="form-select form-select-sm" @bind="action.WebhookMethod">
+                                                            <option value="POST">POST</option>
+                                                            <option value="PUT">PUT</option>
+                                                            <option value="GET">GET</option>
+                                                            <option value="DELETE">DELETE</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Body (JSON, templates ok)</label>
+                                                        <textarea class="form-control form-control-sm font-monospace" @bind="action.PayloadJson" rows="2" placeholder='{"text":"alert from {{deviceName}}"}'></textarea>
+                                                    </div>
+                                                    break;
+                                                case ActionType.Stop:
+                                                    <div class="col-12">
+                                                        <div class="alert alert-info mb-0 small py-2">Halts further actions in this rule. Useful as the final action in a Conditional branch.</div>
+                                                    </div>
+                                                    break;
+                                                case ActionType.Conditional:
+                                                case ActionType.Parallel:
+                                                    <div class="col-12">
+                                                        <div class="alert alert-warning mb-0 small py-2">
+                                                            <strong>@action.Type</strong> actions nest sub-action lists. The visual editor for nested actions is on the roadmap; for now provide raw JSON below — same shape as the Rules API expects.
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-12">
+                                                        <label class="form-label small mb-1">Raw JSON for this action</label>
+                                                        <textarea class="form-control form-control-sm font-monospace" @bind="action.RawJson" rows="3" placeholder='{"if":{...},"then":[...],"else":[...]}'></textarea>
+                                                    </div>
+                                                    break;
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                                @if (_actions.Count == 0)
+                                {
+                                    <div class="alert alert-warning small mb-0">No actions yet. A rule needs at least one action to do anything.</div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tags -->
+                    <div class="mb-4">
+                        <label class="form-label fw-semibold">Tags</label>
+                        <input type="text" class="form-control" @bind="_tagsInput" placeholder="temperature, alert, zigbee (comma-separated)" />
+                        <small class="text-muted">Add tags for organization and filtering</small>
+                    </div>
+
+                    <!-- Advanced Options Toggle -->
+                    <button class="btn btn-sm btn-link p-0 mb-3" @onclick="() => _showAdvanced = !_showAdvanced">
+                        @(_showAdvanced ? "Hide" : "Show") Advanced Options
+                    </button>
+
+                    @if (_showAdvanced)
+                    {
+                        <div class="border rounded p-3 mb-3">
+                            <div class="row g-3">
+                                <div class="col-md-12">
+                                    <label class="form-label">Debounce</label>
+                                    <input type="text" class="form-control @(_validationAttempted && !IsValidDebounce(_debounce) ? "is-invalid" : "")"
+                                           @bind="_debounce" placeholder="5s, 1m, 2h" />
+                                    <small class="text-muted">Minimum time between triggers. Format: <code>Ns</code> / <code>Nm</code> / <code>Nh</code> / <code>Nd</code> or empty.</small>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+                <div class="rule-editor-preview px-4 py-3 small">
+                    <div class="d-flex align-items-center gap-3 flex-wrap">
+                        <div class="text-muted text-uppercase fw-semibold" style="letter-spacing: 0.05em;">Preview</div>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge bg-info">@GetTriggerLabel(_triggerType)</span>
+                            <code>@(string.IsNullOrEmpty(_sourceTopic) ? "(no source topic yet)" : _sourceTopic)</code>
+                        </div>
+                        @if (_hasCondition && _conditions.Any(c => !string.IsNullOrEmpty(c.Property)))
+                        {
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-secondary">IF</span>
+                                <code>@(_conditionLogic.ToString().ToUpper())(@_conditions.Count) condition@(_conditions.Count == 1 ? "" : "s")</code>
+                            </div>
+                        }
+                        <span class="text-muted">→</span>
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <span class="badge bg-success">THEN</span>
+                            @if (_actions.Count == 0)
+                            {
+                                <code>(no actions yet)</code>
+                            }
+                            else
+                            {
+                                @for (int i = 0; i < _actions.Count; i++)
+                                {
+                                    var a = _actions[i];
+                                    <code class="me-1">@FormatActionPreview(a)</code>
+                                    @if (i < _actions.Count - 1) { <span class="text-muted">·</span> }
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-secondary" @onclick="CloseEditor">Cancel</button>
+                    <button type="button" class="btn btn-primary" @onclick="SaveRule">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+                            <path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.267.267 0 0 1 .02-.022z"/>
+                        </svg>
+                        Save Rule
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .rule-editor-modal .modal-body {
+        padding: 1.25rem 1.5rem;
+    }
+
+    /* Quick-Start cards. All three render with the same neutral
+       border by default so none of them looks selected; the
+       _appliedTemplate-driven `.active` class swaps the border to the
+       brand green (no fill) so the operator sees exactly which card
+       was applied. Bootstrap's per-color outline-* classes were
+       leaking colored borders onto unselected cards, which read as
+       "still selected" after switching templates. */
+    .rule-template-card {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 1rem;
+        background: transparent;
+        border: 1px solid var(--hermod-border, rgba(255, 255, 255, 0.15));
+        border-radius: 0.5rem;
+        color: var(--hermod-text, inherit);
+        transition: border-color 0.12s ease, background-color 0.12s ease;
+        cursor: pointer;
+    }
+    .rule-template-card:hover {
+        border-color: var(--hermod-text-muted, rgba(255, 255, 255, 0.4));
+    }
+    .rule-template-card:focus,
+    .rule-template-card:focus-visible {
+        outline: none;
+        box-shadow: none;
+    }
+    .rule-template-card.active {
+        border-color: var(--hermod-primary, #00FF42);
+        border-width: 2px;
+        padding: calc(1rem - 1px); /* keep box dims stable when border thickens */
+    }
+    .rule-template-card .fw-semibold {
+        color: var(--hermod-text, inherit);
+        margin-bottom: 0.25rem;
+    }
+
+    /* Live-preview strip pinned between body and footer. Subtle background
+       distinguishes it from form rows above without competing with the
+       primary action footer. */
+    .rule-editor-preview {
+        background: var(--hermod-card-bg-alt, rgba(0, 0, 0, 0.025));
+        border-top: 1px solid var(--hermod-border, rgba(0, 0, 0, 0.08));
+        border-bottom: 1px solid var(--hermod-border, rgba(0, 0, 0, 0.08));
+    }
+    .rule-editor-preview code {
+        font-size: 0.85em;
+        background: rgba(0, 0, 0, 0.05);
+        padding: 1px 6px;
+        border-radius: 4px;
+    }
+
+    .rule-card {
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .rule-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12) !important;
+    }
+
+    .rule-card.disabled {
+        opacity: 0.6;
+    }
+
+    .rule-flow {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        background: var(--hermod-bg-secondary);
+        padding: 1rem;
+        border-radius: 12px;
+    }
+
+    .flow-item {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+
+    .flow-label {
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--hermod-text-muted);
+    }
+
+    .flow-item code {
+        font-size: 0.8rem;
+        color: var(--hermod-text);
+        background: var(--hermod-card-bg);
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        word-break: break-all;
+    }
+
+    .flow-condition {
+        font-size: 0.75rem;
+        color: var(--hermod-text-muted);
+        margin-top: 0.25rem;
+    }
+
+    .flow-condition .property { color: var(--hermod-info); }
+    .flow-condition .operator { margin: 0 0.25rem; }
+    .flow-condition .value { color: var(--hermod-success); font-weight: 600; }
+
+    .flow-arrow {
+        color: var(--hermod-text-muted);
+        flex-shrink: 0;
+    }
+
+    .rule-stats {
+        border-top: 1px solid var(--hermod-border);
+        padding-top: 1rem;
+        margin-top: 1rem;
+    }
+
+    .stat {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .stat-label {
+        font-size: 0.65rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--hermod-text-muted);
+    }
+
+    .stat-value {
+        font-size: 0.875rem;
+        color: var(--hermod-text);
+    }
+
+    .section-title {
+        display: flex;
+        align-items: center;
+        font-weight: 600;
+        color: var(--hermod-text);
+    }
+
+    .condition-section,
+    .action-section {
+        background: var(--hermod-bg-secondary);
+        padding: 1.25rem;
+        border-radius: 12px;
+    }
+
+    /* Two-column editor: trigger + condition on the left, action list
+       on the right. Falls back to single-column under lg as Bootstrap's
+       col-lg-* default. The column tops align so the WHEN / THEN
+       header rows sit on the same line. */
+    .rule-editor-twocol > [class*="col-"] {
+        display: flex;
+        flex-direction: column;
+    }
+    .rule-editor-twocol .condition-section,
+    .rule-editor-twocol .action-section {
+        flex: 1 1 auto;
+    }
+
+    /* One step in the multi-action list. Rendered as a card with a
+       neutral border so each step reads independently; the per-type
+       fields render inline below the type selector. */
+    .rule-action-card {
+        background: var(--hermod-card-bg);
+        border: 1px solid var(--hermod-border, rgba(255, 255, 255, 0.12));
+        border-radius: 8px;
+        padding: 0.75rem;
+    }
+</style>
+
+@code {
+    private static readonly Regex DebouncePattern = new("^[0-9]+[smhd]$", RegexOptions.Compiled);
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private List<Rule> _rules = new();
+    private bool _showRuleEditor;
+    private bool _isNewRule;
+    private string? _editingRuleId;
+    private string? _loadError;
+    // Tracks which Quick-Start template (if any) was last applied in
+    // the current editor session, so the active card stays highlighted
+    // and an earlier card releases its outline when the operator picks
+    // a different one.
+    private RuleTemplate? _appliedTemplate;
+
+    // Form fields
+    private string _ruleName = "";
+    private string _ruleDescription = "";
+    private bool _ruleEnabled = true;
+    private int _rulePriority = 100;
+    private string _sourceTopic = "";
+    private string _cronExpression = "";
+    private string _chainFromRuleId = "";
+    // Multi-step action list. Replaces the single-Publish-action surface
+    // the editor shipped with originally; the runtime engine has always
+    // accepted N actions, the UI just hadn't surfaced it.
+    private List<ActionInput> _actions = new() { new() { Type = ActionType.Publish, PassthroughPayload = true } };
+
+    private string _targetTopic = "";
+    private TriggerType _triggerType = TriggerType.OnMessage;
+    private bool _hasCondition;
+    private LogicOperator _conditionLogic = LogicOperator.All;
+    private List<ConditionInput> _conditions = new() { new() };
+    private bool _passthroughPayload = true;
+    private string _payloadJson = "{}";
+    private string _tagsInput = "";
+    private string _debounce = "";
+    private bool _showAdvanced;
+    private string? _validationError;
+    private bool _validationAttempted;
+
+    private class ConditionInput
+    {
+        public string Property { get; set; } = "";
+        public ComparisonOperator Operator { get; set; } = ComparisonOperator.GreaterThan;
+        public string Value { get; set; } = "";
+    }
+
+    private enum RuleTemplate { ForwardMessage, ThresholdAlert, ProtocolBridge }
+
+    protected override async Task OnInitializedAsync() => await LoadRules();
+
+    public void Dispose()
+    {
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private async Task LoadRules()
+    {
+        _loadError = null;
+        try
+        {
+            var rules = await RulesService.GetAllRulesAsync(_pageCts.Token);
+            _rules = rules.ToList();
+        }
+        catch (OperationCanceledException)
+        {
+            // Page navigated away mid-load; nothing to report.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load rules for dashboard");
+            _loadError = "Failed to load rules. Retry or check the coordinator logs.";
+        }
+    }
+
+    private static bool IsValidDebounce(string value) =>
+        string.IsNullOrWhiteSpace(value) || DebouncePattern.IsMatch(value.Trim());
+
+    private string FormatActionSummary(RuleAction action)
+    {
+        if (!string.IsNullOrEmpty(action.Topic)) return action.Topic!;
+        return action.Type switch
+        {
+            ActionType.Chain => $"chain → {action.ChainToRule ?? "?"}",
+            ActionType.SetState => action.SetState is { Count: > 0 } s
+                ? $"setState {string.Join(",", s.Keys)}"
+                : "setState",
+            ActionType.Delay => $"delay {action.Delay ?? "?"}",
+            ActionType.Log => action.LogMessage is not null ? $"log: {action.LogMessage}" : "log",
+            ActionType.Webhook => $"webhook {action.WebhookUrl ?? "?"}",
+            ActionType.Parallel => "parallel",
+            ActionType.Conditional => "conditional",
+            _ => action.Type.ToString()
+        };
+    }
+
+    private void ShowAddRule()
+    {
+        _isNewRule = true;
+        _editingRuleId = null;
+        ResetForm();
+        _showRuleEditor = true;
+    }
+
+    private void ResetForm()
+    {
+        _appliedTemplate = null;
+        _ruleName = "";
+        _ruleDescription = "";
+        _ruleEnabled = true;
+        _rulePriority = 100;
+        _sourceTopic = "";
+        _cronExpression = "";
+        _chainFromRuleId = "";
+        _targetTopic = "";
+        _triggerType = TriggerType.OnMessage;
+        _hasCondition = false;
+        _conditionLogic = LogicOperator.All;
+        _conditions = new List<ConditionInput> { new() };
+        _passthroughPayload = true;
+        _payloadJson = "{}";
+        _actions = new List<ActionInput> { new() { Type = ActionType.Publish, PassthroughPayload = true } };
+        _tagsInput = "";
+        _debounce = "";
+        _showAdvanced = false;
+        _validationError = null;
+        _validationAttempted = false;
+    }
+
+    private void AddCondition()
+    {
+        _conditions.Add(new ConditionInput());
+    }
+
+    private void RemoveCondition(int index)
+    {
+        if (_conditions.Count > 1 && index < _conditions.Count)
+        {
+            _conditions.RemoveAt(index);
+        }
+    }
+
+    private void ApplyTemplate(RuleTemplate template)
+    {
+        _appliedTemplate = template;
+        switch (template)
+        {
+            case RuleTemplate.ForwardMessage:
+                _ruleName = "Forward Message";
+                _sourceTopic = "zigbee/+";
+                _hasCondition = false;
+                _actions = new List<ActionInput>
+                {
+                    new() { Type = ActionType.Publish, Topic = "wifi/display/{{deviceName}}", PassthroughPayload = true }
+                };
+                _tagsInput = "forward";
+                break;
+            case RuleTemplate.ThresholdAlert:
+                _ruleName = "Temperature Alert";
+                _sourceTopic = "zigbee/+";
+                _hasCondition = true;
+                _conditions = new List<ConditionInput>
+                {
+                    new() { Property = "temperature", Operator = ComparisonOperator.GreaterThan, Value = "30" }
+                };
+                _conditionLogic = LogicOperator.All;
+                _actions = new List<ActionInput>
+                {
+                    new()
+                    {
+                        Type = ActionType.Publish,
+                        Topic = "alerts/temperature/high",
+                        PassthroughPayload = false,
+                        PayloadJson = """{"alert":"high_temperature","value":"{{source.temperature}}"}"""
+                    }
+                };
+                _tagsInput = "alert, temperature";
+                break;
+            case RuleTemplate.ProtocolBridge:
+                _ruleName = "ZigBee to LoRa Bridge";
+                _sourceTopic = "zigbee/+";
+                _triggerType = TriggerType.OnChange;
+                _actions = new List<ActionInput>
+                {
+                    new() { Type = ActionType.Publish, Topic = "lora/gateway/{{deviceName}}", PassthroughPayload = true }
+                };
+                _tagsInput = "bridge, zigbee, lora";
+                break;
+        }
+    }
+
+    private void EditRule(Rule rule)
+    {
+        _isNewRule = false;
+        _editingRuleId = rule.Id;
+        _ruleName = rule.Name;
+        _ruleDescription = rule.Description ?? "";
+        _ruleEnabled = rule.Enabled;
+        _rulePriority = rule.Priority;
+        _sourceTopic = rule.Trigger?.TopicPattern ?? "";
+        _cronExpression = rule.Trigger?.Schedule ?? "";
+        _chainFromRuleId = rule.Id;
+        _triggerType = rule.Trigger?.Type ?? TriggerType.OnMessage;
+        _debounce = rule.Trigger?.Debounce ?? "";
+
+        // Load all conditions
+        _conditionLogic = rule.Conditions?.Logic ?? LogicOperator.All;
+        var ruleConditions = rule.Conditions?.Conditions;
+        _hasCondition = ruleConditions?.Any(c => !string.IsNullOrEmpty(c.Property)) ?? false;
+        _conditions = _hasCondition && ruleConditions != null
+            ? ruleConditions.Select(c => new ConditionInput
+            {
+                Property = c.Property ?? "",
+                Operator = c.Operator,
+                Value = c.Value?.ToString() ?? ""
+            }).ToList()
+            : new List<ConditionInput> { new() };
+        if (_conditions.Count == 0) _conditions.Add(new ConditionInput());
+
+        // Load every action the rule has, mapped onto the editor's
+        // ActionInput shape. Values that are null/empty in the source
+        // model fall through to the ActionInput defaults so the editor
+        // never shows null in a textarea.
+        _actions = (rule.Actions ?? new List<RuleAction>())
+            .Select(a => new ActionInput
+            {
+                Type = a.Type,
+                Topic = a.Topic ?? "",
+                PassthroughPayload = a.PassthroughPayload,
+                PayloadJson = a.Payload != null ? System.Text.Json.JsonSerializer.Serialize(a.Payload) : "{}",
+                QoS = a.QoS,
+                Retain = a.Retain,
+                ChainToRule = a.ChainToRule ?? "",
+                Delay = a.Delay ?? "",
+                ChainDataJson = a.ChainData != null ? System.Text.Json.JsonSerializer.Serialize(a.ChainData) : "{}",
+                SetStateJson = a.SetState != null ? System.Text.Json.JsonSerializer.Serialize(a.SetState) : "{}",
+                GlobalStateJson = a.GlobalState != null ? System.Text.Json.JsonSerializer.Serialize(a.GlobalState) : "{}",
+                LogMessage = a.LogMessage ?? "",
+                LogLevel = string.IsNullOrEmpty(a.LogLevel) ? "Information" : a.LogLevel!,
+                WebhookUrl = a.WebhookUrl ?? "",
+                WebhookMethod = string.IsNullOrEmpty(a.WebhookMethod) ? "POST" : a.WebhookMethod!,
+                RawJson = (a.Type is ActionType.Conditional or ActionType.Parallel)
+                    ? System.Text.Json.JsonSerializer.Serialize(a, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })
+                    : ""
+            })
+            .ToList();
+        if (_actions.Count == 0)
+        {
+            _actions.Add(new ActionInput { Type = ActionType.Publish, PassthroughPayload = true });
+        }
+        // Legacy fields kept for back-compat — primary surface is _actions now.
+        var firstAction = rule.Actions?.FirstOrDefault();
+        _targetTopic = firstAction?.Topic ?? "";
+        _passthroughPayload = firstAction?.PassthroughPayload ?? true;
+        _payloadJson = firstAction?.Payload != null
+            ? System.Text.Json.JsonSerializer.Serialize(firstAction.Payload)
+            : "{}";
+
+        _tagsInput = rule.Tags != null ? string.Join(", ", rule.Tags) : "";
+        _showAdvanced = !string.IsNullOrEmpty(_debounce);
+        _validationError = null;
+        _validationAttempted = false;
+        _showRuleEditor = true;
+    }
+
+    private void CloseEditor()
+    {
+        _showRuleEditor = false;
+    }
+
+    private async Task SaveRule()
+    {
+        _validationAttempted = true;
+        _validationError = null;
+
+        if (string.IsNullOrWhiteSpace(_ruleName))
+        {
+            _validationError = "Rule name is required";
+            return;
+        }
+
+        if (_triggerType is TriggerType.OnMessage or TriggerType.OnChange or TriggerType.OnAvailability
+            && string.IsNullOrWhiteSpace(_sourceTopic))
+        {
+            _validationError = "Source topic is required for this trigger type";
+            return;
+        }
+
+        if (_triggerType == TriggerType.OnSchedule && string.IsNullOrWhiteSpace(_cronExpression))
+        {
+            _validationError = "Cron expression is required for scheduled triggers";
+            return;
+        }
+
+        if (_actions.Count == 0)
+        {
+            _validationError = "A rule needs at least one action.";
+            return;
+        }
+        for (int ai = 0; ai < _actions.Count; ai++)
+        {
+            var a = _actions[ai];
+            switch (a.Type)
+            {
+                case ActionType.Publish when string.IsNullOrWhiteSpace(a.Topic):
+                    _validationError = $"Step {ai + 1} (Publish) needs a target topic.";
+                    return;
+                case ActionType.Webhook when string.IsNullOrWhiteSpace(a.WebhookUrl):
+                    _validationError = $"Step {ai + 1} (Webhook) needs a URL.";
+                    return;
+                case ActionType.Delay when string.IsNullOrWhiteSpace(a.Delay):
+                    _validationError = $"Step {ai + 1} (Delay) needs a duration (e.g. 5s, 1m).";
+                    return;
+                case ActionType.Chain when string.IsNullOrWhiteSpace(a.ChainToRule):
+                    _validationError = $"Step {ai + 1} (Chain) needs the id of the rule to invoke.";
+                    return;
+                case ActionType.Log when string.IsNullOrWhiteSpace(a.LogMessage):
+                    _validationError = $"Step {ai + 1} (Log) needs a message.";
+                    return;
+            }
+        }
+
+        if (!IsValidDebounce(_debounce))
+        {
+            _validationError = "Debounce must be empty or match Ns/Nm/Nh/Nd (e.g. 5s, 1m, 2h).";
+            return;
+        }
+
+        var ruleId = _editingRuleId
+            ?? (_triggerType == TriggerType.OnChain && !string.IsNullOrWhiteSpace(_chainFromRuleId)
+                ? _chainFromRuleId.Trim()
+                : Guid.NewGuid().ToString());
+
+        var rule = new Rule
+        {
+            Id = ruleId,
+            Name = _ruleName,
+            Description = string.IsNullOrWhiteSpace(_ruleDescription) ? null : _ruleDescription,
+            Enabled = _ruleEnabled,
+            Priority = _rulePriority,
+            Trigger = new RuleTrigger
+            {
+                TopicPattern = _triggerType is TriggerType.OnMessage or TriggerType.OnChange or TriggerType.OnAvailability
+                    ? _sourceTopic
+                    : string.Empty,
+                Schedule = _triggerType == TriggerType.OnSchedule ? _cronExpression : null,
+                Type = _triggerType,
+                Debounce = string.IsNullOrWhiteSpace(_debounce) ? null : _debounce
+            },
+            Tags = string.IsNullOrWhiteSpace(_tagsInput)
+                ? new List<string>()
+                : _tagsInput.Split(',').Select(t => t.Trim()).Where(t => !string.IsNullOrEmpty(t)).ToList()
+        };
+
+        // Conditions - support multiple with AND/OR logic
+        if (_hasCondition)
+        {
+            var validConditions = _conditions
+                .Where(c => !string.IsNullOrWhiteSpace(c.Property))
+                .Select(c =>
+                {
+                    object? conditionValue = c.Value;
+                    if (double.TryParse(c.Value, out var numVal))
+                        conditionValue = numVal;
+                    else if (bool.TryParse(c.Value, out var boolVal))
+                        conditionValue = boolVal;
+
+                    return new RuleCondition
+                    {
+                        Property = c.Property,
+                        Operator = c.Operator,
+                        Value = conditionValue
+                    };
+                })
+                .ToList();
+
+            if (validConditions.Any())
+            {
+                rule.Conditions = new RuleConditionGroup
+                {
+                    Logic = _conditionLogic,
+                    Conditions = validConditions
+                };
+            }
+        }
+
+        // Build the action list from the editor's _actions input. Each
+        // ActionInput is mapped onto a RuleAction by ActionType — only
+        // the type-relevant fields are written; the rest stay null so
+        // the wire payload is tight.
+        var ruleActions = new List<RuleAction>();
+        foreach (var ai in _actions)
+        {
+            var ra = new RuleAction { Type = ai.Type };
+            switch (ai.Type)
+            {
+                case ActionType.Publish:
+                    ra.Topic = ai.Topic;
+                    ra.PassthroughPayload = ai.PassthroughPayload;
+                    ra.QoS = ai.QoS;
+                    ra.Retain = ai.Retain;
+                    if (!ai.PassthroughPayload && !string.IsNullOrWhiteSpace(ai.PayloadJson))
+                    {
+                        try { ra.Payload = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(ai.PayloadJson); }
+                        catch { ra.Payload = new Dictionary<string, object>(); }
+                    }
+                    break;
+                case ActionType.Chain:
+                    ra.ChainToRule = string.IsNullOrWhiteSpace(ai.ChainToRule) ? null : ai.ChainToRule.Trim();
+                    ra.Delay = string.IsNullOrWhiteSpace(ai.Delay) ? null : ai.Delay.Trim();
+                    if (!string.IsNullOrWhiteSpace(ai.ChainDataJson))
+                    {
+                        try { ra.ChainData = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(ai.ChainDataJson); }
+                        catch { /* drop bad JSON, leave null */ }
+                    }
+                    break;
+                case ActionType.SetState:
+                    if (!string.IsNullOrWhiteSpace(ai.SetStateJson))
+                    {
+                        try { ra.SetState = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(ai.SetStateJson); }
+                        catch { /* drop bad JSON */ }
+                    }
+                    if (!string.IsNullOrWhiteSpace(ai.GlobalStateJson))
+                    {
+                        try { ra.GlobalState = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(ai.GlobalStateJson); }
+                        catch { /* drop bad JSON */ }
+                    }
+                    break;
+                case ActionType.Delay:
+                    ra.Delay = string.IsNullOrWhiteSpace(ai.Delay) ? null : ai.Delay.Trim();
+                    break;
+                case ActionType.CancelDelay:
+                case ActionType.Stop:
+                    // No fields needed.
+                    break;
+                case ActionType.Log:
+                    ra.LogMessage = ai.LogMessage;
+                    ra.LogLevel = string.IsNullOrWhiteSpace(ai.LogLevel) ? "Information" : ai.LogLevel;
+                    break;
+                case ActionType.Webhook:
+                    ra.WebhookUrl = string.IsNullOrWhiteSpace(ai.WebhookUrl) ? null : ai.WebhookUrl.Trim();
+                    ra.WebhookMethod = string.IsNullOrWhiteSpace(ai.WebhookMethod) ? "POST" : ai.WebhookMethod;
+                    if (!string.IsNullOrWhiteSpace(ai.PayloadJson))
+                    {
+                        try { ra.Payload = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(ai.PayloadJson); }
+                        catch { /* drop bad JSON */ }
+                    }
+                    break;
+                case ActionType.Conditional:
+                case ActionType.Parallel:
+                    // Round-trip raw JSON for nested-action types until
+                    // the visual editor for them lands.
+                    if (!string.IsNullOrWhiteSpace(ai.RawJson))
+                    {
+                        try
+                        {
+                            var parsed = System.Text.Json.JsonSerializer.Deserialize<RuleAction>(ai.RawJson);
+                            if (parsed != null)
+                            {
+                                ra = parsed;
+                                ra.Type = ai.Type;
+                            }
+                        }
+                        catch { /* keep ra with just Type set */ }
+                    }
+                    break;
+            }
+            ruleActions.Add(ra);
+        }
+        rule.Actions = ruleActions;
+
+        try
+        {
+            await RulesService.AddOrUpdateRuleAsync(rule, _pageCts.Token);
+            RulesEngine.InvalidateCache();
+            await LoadRules();
+            CloseEditor();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to save rule {RuleId}", rule.Id);
+            _validationError = "Failed to save rule. Check the coordinator logs.";
+        }
+    }
+
+    private async Task ToggleRule(Rule rule)
+    {
+        try
+        {
+            await RulesService.EnableRuleAsync(rule.Id, !rule.Enabled, _pageCts.Token);
+            RulesEngine.InvalidateCache();
+            await LoadRules();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to toggle rule {RuleId}", rule.Id);
+            _loadError = "Failed to toggle rule. Retry.";
+        }
+    }
+
+    private async Task DeleteRule(string id)
+    {
+        try
+        {
+            await RulesService.RemoveRuleAsync(id, _pageCts.Token);
+            RulesEngine.InvalidateCache();
+            await LoadRules();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to delete rule {RuleId}", id);
+            _loadError = "Failed to delete rule. Retry.";
+        }
+    }
+
+    private string GetOperatorSymbol(ComparisonOperator op) => op switch
+    {
+        ComparisonOperator.Equals => "=",
+        ComparisonOperator.NotEquals => "!=",
+        ComparisonOperator.GreaterThan => ">",
+        ComparisonOperator.LessThan => "<",
+        ComparisonOperator.GreaterThanOrEquals => ">=",
+        ComparisonOperator.LessThanOrEquals => "<=",
+        ComparisonOperator.Contains => "contains",
+        ComparisonOperator.Exists => "exists",
+        ComparisonOperator.Changed => "changed",
+        _ => "?"
+    };
+
+    private string GetTriggerTypeLabel(TriggerType tt) => tt switch
+    {
+        TriggerType.OnMessage => "Every Message",
+        TriggerType.OnChange => "Value Changed",
+        TriggerType.OnSchedule => "On Schedule",
+        TriggerType.OnChain => "When Chained",
+        TriggerType.OnStartup => "On Startup",
+        TriggerType.OnAvailability => "Device Online/Offline",
+        _ => tt.ToString()
+    };
+
+    private string GetTriggerLabel(TriggerType tt) => tt switch
+    {
+        TriggerType.OnMessage => "WHEN",
+        TriggerType.OnChange => "ON CHANGE",
+        _ => tt.ToString().ToUpper()
+    };
+
+    // Action editor support — held server-side because the engine accepts
+    // many shapes per ActionType. PayloadJson / ChainDataJson / SetStateJson /
+    // GlobalStateJson / RawJson are stored as text to keep the UI fast;
+    // they're only parsed at SaveRule time.
+    private sealed class ActionInput
+    {
+        public ActionType Type { get; set; } = ActionType.Publish;
+        public string Topic { get; set; } = "";
+        public bool PassthroughPayload { get; set; } = true;
+        public string PayloadJson { get; set; } = "{}";
+        public int QoS { get; set; } = 0;
+        public bool Retain { get; set; }
+        public string ChainToRule { get; set; } = "";
+        public string Delay { get; set; } = "";
+        public string ChainDataJson { get; set; } = "{}";
+        public string SetStateJson { get; set; } = "{}";
+        public string GlobalStateJson { get; set; } = "{}";
+        public string LogMessage { get; set; } = "";
+        public string LogLevel { get; set; } = "Information";
+        public string WebhookUrl { get; set; } = "";
+        public string WebhookMethod { get; set; } = "POST";
+        public string RawJson { get; set; } = "";
+    }
+
+    private void AddAction() => _actions.Add(new ActionInput { Type = ActionType.Publish, PassthroughPayload = true });
+    private void RemoveAction(int index)
+    {
+        if (index >= 0 && index < _actions.Count) _actions.RemoveAt(index);
+    }
+    private void MoveAction(int index, int delta)
+    {
+        var newIndex = index + delta;
+        if (index < 0 || index >= _actions.Count) return;
+        if (newIndex < 0 || newIndex >= _actions.Count) return;
+        (_actions[index], _actions[newIndex]) = (_actions[newIndex], _actions[index]);
+    }
+
+    private string GetActionTypeLabel(ActionType at) => at switch
+    {
+        ActionType.Publish => "Publish (MQTT)",
+        ActionType.Chain => "Chain (invoke another rule)",
+        ActionType.SetState => "Set state (rule-local / global)",
+        ActionType.Conditional => "Conditional (if / then / else)",
+        ActionType.Delay => "Delay (wait)",
+        ActionType.Parallel => "Parallel (run sub-actions concurrently)",
+        ActionType.Log => "Log message",
+        ActionType.Webhook => "Webhook (HTTP call)",
+        ActionType.Stop => "Stop (halt this rule)",
+        ActionType.CancelDelay => "Cancel delay",
+        _ => at.ToString()
+    };
+
+    private string FormatActionPreview(ActionInput a) => a.Type switch
+    {
+        ActionType.Publish => string.IsNullOrEmpty(a.Topic) ? "publish ?" : $"publish {a.Topic}",
+        ActionType.Chain => string.IsNullOrEmpty(a.ChainToRule) ? "chain ?" : $"chain → {a.ChainToRule}{(string.IsNullOrEmpty(a.Delay) ? "" : $" after {a.Delay}")}",
+        ActionType.SetState => "set state",
+        ActionType.Conditional => "if/then/else",
+        ActionType.Delay => string.IsNullOrEmpty(a.Delay) ? "delay ?" : $"delay {a.Delay}",
+        ActionType.Parallel => "parallel",
+        ActionType.Log => "log",
+        ActionType.Webhook => string.IsNullOrEmpty(a.WebhookUrl) ? $"{a.WebhookMethod} ?" : $"{a.WebhookMethod} {a.WebhookUrl}",
+        ActionType.Stop => "stop",
+        ActionType.CancelDelay => "cancel delay",
+        _ => a.Type.ToString().ToLowerInvariant()
+    };
+
+    private string GetActionTypeHint(ActionType at) => at switch
+    {
+        ActionType.Publish => "Publish an MQTT message to the target topic; payload may be passthrough or templated JSON.",
+        ActionType.Chain => "Invoke another rule by id, optionally after a delay; data forwarded as {{chain.*}} in the downstream rule.",
+        ActionType.SetState => "Write to rule-local state (visible to this rule only) or global state (visible to all rules).",
+        ActionType.Conditional => "Branch on a predicate; nested then/else action lists. JSON-only for now.",
+        ActionType.Delay => "Pause this rule for the given duration before the next action runs.",
+        ActionType.Parallel => "Fire several sub-actions concurrently. JSON-only for now.",
+        ActionType.Log => "Write a message to the Coordinator log at the chosen level.",
+        ActionType.Webhook => "POST/PUT/GET/DELETE a JSON body to an external URL.",
+        ActionType.Stop => "Halt processing of further actions in this rule. Use as a final guard.",
+        ActionType.CancelDelay => "Cancel any pending Delay action queued earlier in the same rule.",
+        _ => string.Empty
+    };
+
+    private string GetTriggerTypeHint(TriggerType tt) => tt switch
+    {
+        TriggerType.OnMessage     => "Fires every time a message hits the source topic. Heaviest trigger; combine with conditions to filter.",
+        TriggerType.OnChange      => "Fires only when a parsed value (per the conditions below) actually changes from the previous one. Drops repeats.",
+        TriggerType.OnSchedule    => "Fires on a cron schedule, ignoring incoming messages. Useful for periodic re-publishes or housekeeping.",
+        TriggerType.OnChain       => "Does not fire on its own — another rule's Chain action invokes this one. Good for shared sub-actions.",
+        TriggerType.OnStartup     => "Fires once when the rules engine boots. Use for setting initial state on relays or sending a hello payload.",
+        TriggerType.OnAvailability => "Fires when a device transitions between online and offline. Pair with the availability/* topic family.",
+        _ => string.Empty
+    };
+}

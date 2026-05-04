@@ -1,0 +1,31 @@
+[Unit]
+Description=Hermod Ansible-pull updater (oneshot)
+Documentation=https://github.com/ansible/ansible
+After=network-online.target
+Wants=network-online.target
+# Retry once on failure; StartLimit* belong in [Unit] per systemd spec
+StartLimitIntervalSec=300s
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+User={{ hermod_user }}
+# Pull the latest playbooks from the git remote and apply the update playbook.
+# NOTE: hermod_git_remote must be replaced with the real repository URL before
+#       enabling this service. The placeholder value will cause this service to fail.
+ExecStart=ansible-pull \
+  --url {{ hermod_git_remote }} \
+  --checkout {{ hermod_git_branch }} \
+  --directory {{ hermod_install_path }} \
+  --inventory localhost, \
+  Hermod/ansible/playbooks/update.yml
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermod-updater
+
+# Restart on failure; rate limiting controlled by StartLimit* in [Unit] above
+Restart=on-failure
+RestartSec=60s
+
+[Install]
+WantedBy=multi-user.target

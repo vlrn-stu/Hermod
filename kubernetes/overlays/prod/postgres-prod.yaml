@@ -1,0 +1,70 @@
+# Postgres prod — server-side TLS, hostssl-only pg_hba.
+# fsGroup=70 (postgres uid on alpine) + defaultMode=0640 satisfies
+# Postgres's "no world/other access" check on ssl_key_file.
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 70
+      containers:
+        - name: postgres
+          args:
+            - "-c"
+            - "shared_buffers=256MB"
+            - "-c"
+            - "max_connections=200"
+            - "-c"
+            - "work_mem=16MB"
+            - "-c"
+            - "maintenance_work_mem=64MB"
+            - "-c"
+            - "effective_cache_size=1GB"
+            - "-c"
+            - "ssl=on"
+            - "-c"
+            - "ssl_cert_file=/etc/postgresql/tls/tls.crt"
+            - "-c"
+            - "ssl_key_file=/etc/postgresql/tls/tls.key"
+            - "-c"
+            - "ssl_ca_file=/etc/postgresql/tls/ca.crt"
+            - "-c"
+            - "hba_file=/etc/postgresql/conf/pg_hba.conf"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1500m
+              memory: 1Gi
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/postgresql/tls
+              readOnly: true
+            - name: pg-hba
+              mountPath: /etc/postgresql/conf
+              readOnly: true
+      volumes:
+        - name: tls
+          projected:
+            defaultMode: 0640
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-postgres-server-tls
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key
+        - name: pg-hba
+          configMap:
+            name: pg-hba-prod

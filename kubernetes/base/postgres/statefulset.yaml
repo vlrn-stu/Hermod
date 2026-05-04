@@ -1,0 +1,230 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: hermod
+  labels:
+    app: postgres
+    component: database
+spec:
+  # Headless governing Service required for StatefulSet stable per-pod DNS;
+  # apps connect via the regular `postgres` ClusterIP Service below.
+  serviceName: postgres-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        component: database
+    spec:
+      initContainers:
+        # Render the init SQL with role passwords from Secrets so they
+        # don't live in the ConfigMap (checked into git) and stay aligned
+        # with whatever ensure-secrets.sh chose.
+        - name: render-initdb
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sed \
+                -e "s|__VAULT_MIG_PASSWORD__|${VAULT_MIG_PASSWORD}|g" \
+                -e "s|__VAULT_APP_PASSWORD__|${VAULT_APP_PASSWORD}|g" \
+                -e "s|__HERMOD_APP_PASSWORD__|${HERMOD_APP_PASSWORD}|g" \
+                /tmpl/init-databases.sql.tmpl > /rendered/init-databases.sql
+              echo "init-databases.sql rendered ($(wc -c </rendered/init-databases.sql) bytes)"
+          env:
+            - name: VAULT_MIG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-secrets
+                  key: db-mig-password
+            - name: VAULT_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-secrets
+                  key: db-app-password
+            - name: HERMOD_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-db-credentials
+                  key: hermod-db-password
+          volumeMounts:
+            - name: init-scripts-template
+              mountPath: /tmpl
+              readOnly: true
+            - name: init-scripts-rendered
+              mountPath: /rendered
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          args:
+            # Pi 5 8GB target. Knobs chosen for the 1536Mi container limit:
+            # shared_buffers 256MB (PG's recommended 25%); work_mem 16MB
+            # to avoid temp-file spill under RuleCountSweep; max_connections
+            # 200 covers coordinator (100) + vault42 (50) + harness + head.
+            - "-c"
+            - "shared_buffers=256MB"
+            - "-c"
+            - "max_connections=200"
+            - "-c"
+            - "work_mem=16MB"
+            - "-c"
+            - "maintenance_work_mem=64MB"
+            - "-c"
+            - "effective_cache_size=1GB"
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: "vault"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-secrets
+                  key: db-mig-password
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth-host=scram-sha-256"
+          resources:
+            # ~20% of Pi 5's 8GB; leaves ~6GB for coordinator + translators
+            # + OS cache. Small fraction on 16GB dev boxes.
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1536Mi"
+              cpu: "1500m"
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            # Mount the rendered emptyDir (passwords substituted),
+            # NOT the raw ConfigMap template.
+            - name: init-scripts-rendered
+              mountPath: /docker-entrypoint-initdb.d
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: init-scripts-template
+          configMap:
+            name: postgres-init
+        - name: init-scripts-rendered
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+# Headless companion for stable per-pod DNS; apps use the regular
+# `postgres` Service below.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless
+  namespace: hermod
+  labels:
+    app: postgres
+    component: database
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    app: postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: hermod
+  labels:
+    app: postgres
+    component: database
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    app: postgres
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: hermod
+  labels:
+    app: postgres
+    component: database
+data:
+  # Template — render-initdb init container substitutes the three
+  # placeholders from Secret-backed envs. Role passwords MUST NOT live
+  # in this ConfigMap (checked into git), or --auto-secrets would
+  # generate a random Secret while CREATE ROLE used the hardcoded value.
+  init-databases.sql.tmpl: |
+    -- Create Vault roles and permissions
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vault_mig') THEN
+        -- CREATEROLE is needed because vault migrations create the vault_app role.
+        CREATE ROLE vault_mig WITH LOGIN CREATEROLE PASSWORD '__VAULT_MIG_PASSWORD__';
+      END IF;
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'vault_app') THEN
+        CREATE ROLE vault_app WITH LOGIN PASSWORD '__VAULT_APP_PASSWORD__';
+      END IF;
+    END
+    $$;
+    GRANT ALL PRIVILEGES ON DATABASE vault TO vault_mig;
+    GRANT CONNECT ON DATABASE vault TO vault_app;
+
+    -- PG 15+ revoked CREATE on schema public from PUBLIC; grant explicitly
+    -- so vault_mig can create migration tables and vault_app can use them.
+    \c vault
+    GRANT ALL ON SCHEMA public TO vault_mig;
+    GRANT USAGE ON SCHEMA public TO vault_app;
+    ALTER DEFAULT PRIVILEGES FOR ROLE vault_mig IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO vault_app;
+    ALTER DEFAULT PRIVILEGES FOR ROLE vault_mig IN SCHEMA public
+        GRANT USAGE, SELECT ON SEQUENCES TO vault_app;
+
+    -- Create Hermod database and roles
+    \c postgres
+    CREATE DATABASE hermod;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hermod_app') THEN
+        CREATE ROLE hermod_app WITH LOGIN PASSWORD '__HERMOD_APP_PASSWORD__';
+      END IF;
+    END
+    $$;
+    GRANT ALL PRIVILEGES ON DATABASE hermod TO hermod_app;
+    \c hermod
+    GRANT ALL ON SCHEMA public TO hermod_app;

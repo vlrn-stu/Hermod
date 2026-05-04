@@ -1,0 +1,46 @@
+# Public-facing Ingress for the Coordinator UI/API.
+#
+# !!! BEFORE APPLYING !!! Replace HOST_PLACEHOLDER (twice) with your real
+# FQDN, e.g. hermod.your-domain.example.
+#
+# Architecture: nginx-ingress terminates the publicly-trusted Let's
+# Encrypt TLS, then re-encrypts to the Coordinator pod over HTTPS using
+# the internal CA (`proxy-ssl-verify off` + the Coord's self-signed
+# cert). External traffic = LE-trusted; in-cluster traffic = internal-CA
+# mTLS chain. Two PKI domains, both terminated correctly.
+#
+# A direct NodePort hit at https://<pi-ip>:42069 still works and still
+# shows the self-signed warning — that path is unchanged. The Ingress is
+# the new "go through hermod.your-domain" path.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hermod-coordinator
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Re-encrypt to the Coord pod (which serves HTTPS on :42069 with the
+    # internal CA cert). nginx will not verify the upstream cert because
+    # it is signed by the internal CA, not a public root.
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "off"
+    # Force-redirect any plaintext hit to HTTPS.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - HOST_PLACEHOLDER
+      secretName: hermod-coordinator-public-tls
+  rules:
+    - host: HOST_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hermod-coordinator
+                port:
+                  number: 42069

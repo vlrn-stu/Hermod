@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <!--
+    Source map gating. Ships wwwroot/**/*.map (bootstrap .css.map etc.)
+    only in Debug builds by default, so production images stay lean.
+    Explicit override: `dotnet publish /p:IncludeSourceMaps=true`.
+  -->
+  <PropertyGroup>
+    <IncludeSourceMaps Condition="'$(IncludeSourceMaps)' == '' AND '$(Configuration)' == 'Debug'">true</IncludeSourceMaps>
+    <IncludeSourceMaps Condition="'$(IncludeSourceMaps)' == ''">false</IncludeSourceMaps>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(IncludeSourceMaps)' != 'true'">
+    <Content Remove="wwwroot\**\*.map" />
+    <None Remove="wwwroot\**\*.map" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Hermod.Core\Hermod.Core.csproj" />
+    <ProjectReference Include="..\Hermod.Infrastructure\Hermod.Infrastructure.csproj" />
+    <PackageReference Include="Vault42.AspNetCore" Version="0.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hermod.Coordinator.UnitTests" />
+  </ItemGroup>
+
+</Project>

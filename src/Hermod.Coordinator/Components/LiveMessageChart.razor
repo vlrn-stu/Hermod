@@ -1,0 +1,205 @@
+@using Hermod.Core.Configuration
+@using Hermod.Core.Interfaces
+@using Microsoft.Extensions.Options
+@inject IStatsService StatsService
+@inject IOptions<HermodSettings> Settings
+@inject ILogger<LiveMessageChart> Logger
+@implements IDisposable
+
+@if (_enabled)
+{
+    <div class="card border-0 shadow-sm">
+        <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center py-2">
+            <h6 class="mb-0 fw-semibold small">
+                <span class="text-success">●</span>
+                Messages per second
+                <span class="text-muted ms-2" style="font-weight: 400;">@($"(last {_windowSeconds}s)")</span>
+            </h6>
+            <div class="d-flex gap-3 small">
+                <span class="text-muted"><span class="text-success">●</span> accepted <strong class="text-success">@CurrentAccepted</strong></span>
+                <span class="text-muted"><span style="color:#ef4444">●</span> rate-limited <strong style="color:#ef4444">@CurrentRate</strong></span>
+                <span class="text-muted"><span style="color:#f59e0b">●</span> deduped <strong style="color:#f59e0b">@CurrentDedup</strong></span>
+                <span class="text-muted">peak <strong>@PeakAccepted</strong></span>
+            </div>
+        </div>
+        <div class="card-body pt-1">
+            <svg viewBox="0 0 @ViewportWidth @ViewportHeight" width="100%" height="140" preserveAspectRatio="none" style="display:block;">
+                <!-- grid lines at 25/50/75% -->
+                <line x1="0" y1="@(ViewportHeight * 0.25)" x2="@ViewportWidth" y2="@(ViewportHeight * 0.25)" stroke="var(--hermod-border)" stroke-width="1" stroke-dasharray="2 3" opacity="0.4" />
+                <line x1="0" y1="@(ViewportHeight * 0.5)"  x2="@ViewportWidth" y2="@(ViewportHeight * 0.5)"  stroke="var(--hermod-border)" stroke-width="1" stroke-dasharray="2 3" opacity="0.4" />
+                <line x1="0" y1="@(ViewportHeight * 0.75)" x2="@ViewportWidth" y2="@(ViewportHeight * 0.75)" stroke="var(--hermod-border)" stroke-width="1" stroke-dasharray="2 3" opacity="0.4" />
+
+                @if (_acceptedSamples.Count > 1)
+                {
+                    <polygon points="@BuildFillPolygon(_acceptedSamples)" fill="#22c55e" fill-opacity="0.15" stroke="none" />
+                    <polyline points="@BuildPolyline(_acceptedSamples)" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-linejoin="round" />
+                    <polyline points="@BuildPolyline(_rateSamples)" fill="none" stroke="#ef4444" stroke-width="1.25" stroke-linejoin="round" stroke-dasharray="0" />
+                    <polyline points="@BuildPolyline(_dedupSamples)" fill="none" stroke="#f59e0b" stroke-width="1.25" stroke-linejoin="round" />
+                }
+            </svg>
+            @if (_acceptedSamples.Count <= 1)
+            {
+                <div class="text-center text-muted small mt-n4" style="margin-top:-70px; height:0;">priming…</div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private const int ViewportWidth = 600;
+    private const int ViewportHeight = 140;
+
+    private readonly CancellationTokenSource _cts = new();
+    private readonly List<long> _acceptedSamples = new();
+    private readonly List<long> _rateSamples = new();
+    private readonly List<long> _dedupSamples = new();
+    private Timer? _timer;
+    private long _lastMessagesProcessed = -1;
+    // Red "rate-limited" line aggregates every rate-type rejection so a
+    // user-installed limit produces a visible spike regardless of which
+    // limiter caught it: per-topic token bucket, per-protocol ingress, or
+    // per-protocol egress. Dedup stays separate (orange) because it is a
+    // distinct failure mode (replay, not rate).
+    private long _lastRateLimitedTotal = -1;
+    private long _lastTopicLimitedDedup = -1;
+    private bool _enabled;
+    private int _windowSeconds = 120;
+    private int _refreshMs = 1000;
+
+    protected override void OnInitialized()
+    {
+        var cfg = Settings.Value.Dashboard.LiveChart;
+        _enabled = cfg.Enabled;
+        if (!_enabled) return;
+
+        _windowSeconds = Math.Max(10, cfg.WindowSeconds);
+        _refreshMs = Math.Max(250, cfg.RefreshMs);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || !_enabled) return;
+
+        // Prime baseline synchronously so the first sample is a real delta.
+        await SampleAsync(prime: true);
+
+        _timer = new Timer(
+            _ => _ = InvokeAsync(async () =>
+            {
+                await SampleAsync(prime: false);
+                StateHasChanged();
+            }),
+            state: null,
+            dueTime: _refreshMs,
+            period: _refreshMs);
+    }
+
+    private async Task SampleAsync(bool prime)
+    {
+        try
+        {
+            var stats = await StatsService.GetCurrentStatsAsync(_cts.Token);
+            // Single unified counter incremented at every rate-type rejection
+            // site (per-topic rate, per-protocol ingress, per-protocol egress)
+            // so the red line can't desync from the underlying limiters.
+            if (_lastMessagesProcessed < 0)
+            {
+                _lastMessagesProcessed = stats.MessagesProcessed;
+                _lastRateLimitedTotal = stats.RateLimitedTotal;
+                _lastTopicLimitedDedup = stats.TopicLimitedDedup;
+                return;
+            }
+
+            var deltaMsg = stats.MessagesProcessed - _lastMessagesProcessed;
+            var deltaRate = stats.RateLimitedTotal - _lastRateLimitedTotal;
+            var deltaDedup = stats.TopicLimitedDedup - _lastTopicLimitedDedup;
+            _lastMessagesProcessed = stats.MessagesProcessed;
+            _lastRateLimitedTotal = stats.RateLimitedTotal;
+            _lastTopicLimitedDedup = stats.TopicLimitedDedup;
+
+            if (prime) return;
+
+            // Counter went backwards (coordinator restart re-seeded from DB
+            // to a lower value than the last in-process read, or operator
+            // hit Reset Counters). Treat as a fresh baseline; don't plot a
+            // negative spike on any series.
+            if (deltaMsg < 0 || deltaRate < 0 || deltaDedup < 0) return;
+
+            _acceptedSamples.Add(deltaMsg);
+            _rateSamples.Add(deltaRate);
+            _dedupSamples.Add(deltaDedup);
+
+            var maxSamples = _windowSeconds * 1000 / _refreshMs;
+            TrimTo(_acceptedSamples, maxSamples);
+            TrimTo(_rateSamples, maxSamples);
+            TrimTo(_dedupSamples, maxSamples);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "LiveMessageChart sample failed");
+        }
+    }
+
+    private static void TrimTo(List<long> samples, int max)
+    {
+        while (samples.Count > max) samples.RemoveAt(0);
+    }
+
+    private long PlotMax()
+    {
+        // Shared y-axis across all three series so a rate/dedup spike is
+        // visually comparable to the accepted line. Min of 1 keeps the
+        // divisor safe on the all-zero priming window.
+        long max = 1;
+        for (var i = 0; i < _acceptedSamples.Count; i++)
+        {
+            if (_acceptedSamples[i] > max) max = _acceptedSamples[i];
+            if (i < _rateSamples.Count && _rateSamples[i] > max) max = _rateSamples[i];
+            if (i < _dedupSamples.Count && _dedupSamples[i] > max) max = _dedupSamples[i];
+        }
+        return max;
+    }
+
+    private string BuildPolyline(List<long> samples)
+    {
+        if (samples.Count == 0) return string.Empty;
+        var maxValue = PlotMax();
+        var stepX = (double)ViewportWidth / Math.Max(1, samples.Count - 1);
+        var sb = new System.Text.StringBuilder(samples.Count * 12);
+        for (var i = 0; i < samples.Count; i++)
+        {
+            var x = i * stepX;
+            var y = ViewportHeight - (samples[i] / (double)maxValue) * (ViewportHeight - 6);
+            if (i > 0) sb.Append(' ');
+            sb.Append(x.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(',');
+            sb.Append(y.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        return sb.ToString();
+    }
+
+    private string BuildFillPolygon(List<long> samples)
+    {
+        var polyline = BuildPolyline(samples);
+        if (string.IsNullOrEmpty(polyline)) return string.Empty;
+        // Close the polygon along the bottom edge so the area under the curve fills.
+        return $"0,{ViewportHeight} {polyline} {ViewportWidth},{ViewportHeight}";
+    }
+
+    private string CurrentAccepted => _acceptedSamples.Count > 0 ? _acceptedSamples[^1].ToString() : "—";
+    private string CurrentRate => _rateSamples.Count > 0 ? _rateSamples[^1].ToString() : "—";
+    private string CurrentDedup => _dedupSamples.Count > 0 ? _dedupSamples[^1].ToString() : "—";
+    private string PeakAccepted => _acceptedSamples.Count > 0 ? _acceptedSamples.Max().ToString() : "—";
+
+    public void Dispose()
+    {
+        // Timer first, then CTS — see Home.razor Dispose comment.
+        _timer?.Dispose();
+        _timer = null;
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        _cts.Dispose();
+    }
+}

@@ -1,0 +1,30 @@
+# LoRa2MQTT hardware patch — adds /dev/ttyACM0 passthrough + privileged.
+# Targets ttyACM0 (not ttyUSB0): Waveshare LoRa HAT USB variant uses a
+# CH340 CDC-ACM bridge (1a86:55d3) which enumerates under ttyACM.
+# Requires lib/kind-config.yaml extraMounts to expose /dev/ttyACM0
+# into the kind node, otherwise pod-create fails validation.
+
+- op: add
+  path: /spec/template/spec/containers/0/securityContext
+  value:
+    privileged: true
+
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: LoRa__SerialPort
+    value: /dev/ttyACM0
+
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: lora-device
+    mountPath: /dev/ttyACM0
+
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: lora-device
+    hostPath:
+      path: /dev/ttyACM0
+      type: CharDevice

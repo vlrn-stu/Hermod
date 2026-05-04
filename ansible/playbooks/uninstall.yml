@@ -1,0 +1,99 @@
+---
+# uninstall.yml - Remove the Hermod Kubernetes stack.
+# This DOES NOT uninstall MicroK8s itself; it only deletes the hermod namespace
+# and all associated resources (pods, services, PVCs, secrets, configmaps).
+#
+# WARNING: PersistentVolumeClaims and their data will be deleted.
+# Make backups before running this playbook.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/uninstall.yml
+#   ansible-playbook -i inventory/hosts.yml playbooks/uninstall.yml -e confirm_uninstall=yes
+
+- name: Uninstall Hermod stack (keep MicroK8s)
+  hosts: hermod_nodes
+  gather_facts: true
+
+  vars:
+    confirm_uninstall: "no"
+
+  pre_tasks:
+    - name: uninstall | Require explicit confirmation
+      ansible.builtin.fail:
+        msg: >
+          You must explicitly confirm uninstall by passing -e confirm_uninstall=yes.
+          This will DELETE all Hermod data including PersistentVolumeClaims.
+      when: confirm_uninstall | lower != "yes"
+      tags: [always]
+
+    - name: uninstall | Announce teardown
+      ansible.builtin.debug:
+        msg: "Uninstalling Hermod from {{ inventory_hostname }} - all data will be DELETED."
+      tags: [always]
+
+  tasks:
+    - name: uninstall | Stop hermod-updater timer (if active)
+      ansible.builtin.systemd:
+        name: hermod-updater.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+      tags: [uninstall, systemd]
+
+    - name: uninstall | Remove systemd updater units
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/hermod-updater.service
+        - /etc/systemd/system/hermod-updater.timer
+      notify: reload systemd daemon
+      tags: [uninstall, systemd]
+
+    - name: uninstall | Delete hermod Kubernetes namespace (deletes ALL resources)
+      ansible.builtin.command:
+        cmd: "microk8s kubectl delete namespace {{ hermod_namespace }} --ignore-not-found=true"
+      register: _ns_delete
+      changed_when: "'deleted' in _ns_delete.stdout"
+      tags: [uninstall, kubectl]
+
+    - name: uninstall | Wait for namespace to be fully terminated
+      ansible.builtin.command:
+        cmd: >
+          microk8s kubectl get namespace {{ hermod_namespace }}
+      register: _ns_check
+      until: _ns_check.rc != 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+      tags: [uninstall, kubectl]
+
+    - name: uninstall | Remove udev rules
+      ansible.builtin.file:
+        path: /etc/udev/rules.d/99-hermod-usb.rules
+        state: absent
+      notify: reload udev rules
+      tags: [uninstall, udev]
+
+    - name: uninstall | Flush handlers
+      ansible.builtin.meta: flush_handlers
+      tags: [uninstall]
+
+    - name: uninstall | Print completion message
+      ansible.builtin.debug:
+        msg:
+          - "Hermod stack removed from {{ inventory_hostname }}."
+          - "MicroK8s remains installed."
+          - "To also remove MicroK8s: sudo snap remove microk8s"
+      tags: [uninstall]
+
+  handlers:
+    - name: reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: reload udev rules
+      ansible.builtin.command:
+        cmd: udevadm control --reload-rules
+      changed_when: false

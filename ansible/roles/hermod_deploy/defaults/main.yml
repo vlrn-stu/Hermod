@@ -1,0 +1,36 @@
+---
+# hermod_deploy role defaults
+
+# Path where the repo lives on the target (cloned or rsynced).
+hermod_install_path: "/opt/hermod"
+
+# Source mode:
+#   "git"  — clone from {{ hermod_git_remote }} (default, works when repo is public or SSH-auth is set up)
+#   "rsync" — rsync the directory at {{ hermod_source_dir }} from the control node (great for private repos / dev loop)
+hermod_source_mode: "git"
+hermod_source_dir: ""   # only used when hermod_source_mode == rsync; absolute path on control host
+
+# Kustomize overlay directory (relative to hermod_install_path/Hermod/kubernetes/)
+hermod_kustomize_overlay: "base"
+
+# Kubernetes namespace
+hermod_namespace: "hermod"
+
+# Timeout (seconds) waiting for pods to reach Running state
+hermod_pod_wait_timeout: 300
+
+# Expected pod app labels
+hermod_expected_pods:
+  - nanomq
+  - postgres
+  - hermod-coordinator
+  - zigbee2mqtt
+  - lora2mqtt
+  - wifi2mqtt
+  - vault42
+  # ble2mqtt disabled — upstream image unavailable
+
+# List of deployment names used for rollback (defined in group_vars/all.yml)
+# hermod_rollback_deployments is intentionally not overridden here; the
+# group_vars value is authoritative and is loaded for all plays including
+# update.yml which does not include this role.

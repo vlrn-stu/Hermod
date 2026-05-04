@@ -1,0 +1,21 @@
+# With a publicly-trusted cert at the edge, we can flip on the HSTS
+# strictness that the self-signed prod overlay had to disable. Browsers
+# will now refuse any future plaintext attempt for one year, including
+# subdomains, and the host is eligible for the HSTS preload list.
+#
+# Reference: src/Hermod.Coordinator/Program.cs:88-93 explains why these
+# were off in the self-signed deploy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermod-coordinator
+spec:
+  template:
+    spec:
+      containers:
+        - name: hermod-coordinator
+          env:
+            - name: Hermod__Hsts__IncludeSubDomains
+              value: "true"
+            - name: Hermod__Hsts__Preload
+              value: "true"

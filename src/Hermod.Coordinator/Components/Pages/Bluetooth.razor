@@ -1,0 +1,449 @@
+@page "/bluetooth"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Hermod.Core.Configuration
+@using Microsoft.Extensions.Options
+@using System.Net.Http.Headers
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IOptions<HermodSettings> Settings
+@inject IMqttService MqttService
+@inject IDeviceService DeviceService
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ILogger<Bluetooth> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>BLE2MQTT - Hermod</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-info">BLE2MQTT</span> Dashboard
+        </h1>
+        <p class="text-muted mb-0">Bluetooth Low Energy protocol bridge</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(BridgeOnline ? "bg-success" : "bg-danger") fs-6 px-3 py-2">
+            Bridge @(BridgeOnline ? "Online" : "Offline")
+        </span>
+        <button class="btn btn-outline-primary btn-sm" @onclick="RefreshStatus">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 protocol-bluetooth">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">BLE Devices</h6>
+                <h2 class="mb-0 fw-bold">@_bleDevices.Count</h2>
+                <small class="text-white-50">Registered devices</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages</h6>
+                <h2 class="mb-0 fw-bold">@_messageCount</h2>
+                <small class="text-white-50">This session</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">MQTT</h6>
+                <h2 class="mb-0 fw-bold">@(MqttService.IsConnected ? "Connected" : "Disconnected")</h2>
+                <small class="text-white-50">Broker status</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Mode</h6>
+                <h2 class="mb-0 fw-bold">@(BridgeOnline ? "Active" : "Standby")</h2>
+                <small class="text-white-50">Bridge status</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Left Panel: Devices -->
+    <div class="col-lg-7">
+        @if (!BridgeOnline && string.IsNullOrEmpty(_bleServiceUrl))
+        {
+            <!-- Not Configured -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-body text-center py-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="currentColor" class="mb-4 text-info opacity-50" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="m8.543 3.948 1.316 1.316L8.543 6.58V3.948Zm0 8.104 1.316-1.316L8.543 9.42v2.632Zm-1.41-4.043L4.275 5.133l.827-.827L7.377 6.58V1.128l4.137 4.136L8.787 8.01l2.745 2.745-4.155 4.155V9.473l-2.258 2.257-.827-.827L7.133 8.01ZM7.903 16c3.498 0 5.904-1.655 5.904-8.01 0-6.335-2.406-7.99-5.903-7.99C4.407 0 2 1.655 2 8.009 2 14.344 4.407 16 7.904 16Z"/>
+                    </svg>
+                    <h3 class="mb-3">BLE2MQTT Not Configured</h3>
+                    <p class="text-muted mb-4">
+                        The BLE2MQTT service URL has not been configured.<br/>
+                        Configure it in your application settings to enable Bluetooth integration.
+                    </p>
+
+                    <div class="row justify-content-center">
+                        <div class="col-md-8">
+                            <div class="card bg-light border-0">
+                                <div class="card-body">
+                                    <h6 class="fw-semibold mb-3">Configuration Example</h6>
+                                    <pre class="text-start bg-dark text-light p-3 rounded mb-3"><code>{
+  "ProtocolTranslators": {
+    "Ble2Mqtt": {
+      "Enabled": true,
+      "Url": "http://ble2mqtt.hermod.svc.cluster.local:8080"
+    }
+  }
+}</code></pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4">
+                        <a href="/settings" class="btn btn-outline-secondary">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492z"/>
+                            </svg>
+                            Go to Settings
+                        </a>
+                    </div>
+                </div>
+            </div>
+        }
+        else
+        {
+            <!-- BLE Devices List -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-info" viewBox="0 0 16 16">
+                            <path fill-rule="evenodd" d="m8.543 3.948 1.316 1.316L8.543 6.58V3.948Zm0 8.104 1.316-1.316L8.543 9.42v2.632Z"/>
+                        </svg>
+                        Registered Bluetooth Devices
+                    </h5>
+                </div>
+                <div class="card-body p-0">
+                    @if (_bleDevices.Any())
+                    {
+                        <div class="table-responsive" style="max-height: 400px;">
+                            <table class="table table-sm table-hover mb-0">
+                                <thead class="sticky-top" style="background: var(--hermod-card-bg);">
+                                    <tr>
+                                        <th>Device</th>
+                                        <th>Status</th>
+                                        <th>Last Seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var device in _bleDevices)
+                                    {
+                                        <tr>
+                                            <td>
+                                                <strong class="device-name">@device.Name</strong>
+                                                <div class="text-muted small">@device.Manufacturer @device.Model</div>
+                                            </td>
+                                            <td>
+                                                <span class="badge @(device.Status == DeviceStatus.Online ? "bg-success" : "bg-secondary")">
+                                                    @device.Status
+                                                </span>
+                                            </td>
+                                            <td class="text-muted small">@device.LastSeen.ToLocalTime().ToString("HH:mm:ss")</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted py-5">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                                <path fill-rule="evenodd" d="m8.543 3.948 1.316 1.316L8.543 6.58V3.948Zm0 8.104 1.316-1.316L8.543 9.42v2.632Zm-1.41-4.043L4.275 5.133l.827-.827L7.377 6.58V1.128l4.137 4.136L8.787 8.01l2.745 2.745-4.155 4.155V9.473l-2.258 2.257-.827-.827L7.133 8.01Z"/>
+                            </svg>
+                            <p class="mb-1">No Bluetooth devices registered</p>
+                            <small>Devices will appear when they send messages</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- Right Panel: Message Log -->
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm" style="max-height: 500px;">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-info" viewBox="0 0 16 16">
+                        <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                        <path d="M3 5.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zM3 8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9A.5.5 0 0 1 3 8zm0 2.5a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5z"/>
+                    </svg>
+                    BLE Messages
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearMessages">Clear</button>
+            </div>
+            <div class="card-body p-0" style="overflow-y: auto; max-height: 400px;">
+                @{ var snapshot = RecentMessagesSnapshot(); }
+                @if (snapshot.Any())
+                {
+                    @foreach (var msg in snapshot.OrderByDescending(m => m.ReceivedAt).Take(50))
+                    {
+                        <div class="border-bottom p-3">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <code class="text-info small">@msg.Topic</code>
+                                <small class="text-muted">@msg.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</small>
+                            </div>
+                            <pre class="bg-light rounded p-2 mb-0 small" style="max-height: 80px; overflow: auto; white-space: pre-wrap; word-break: break-word;">@FormatJson(msg.Payload)</pre>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="text-center text-muted py-5">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                            <path d="M0 0h1v15h15v1H0V0Zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07Z"/>
+                        </svg>
+                        <p class="mb-1">No Bluetooth messages yet</p>
+                        <small>Messages will appear here in real-time</small>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private readonly List<MqttMessage> _recentMessages = new();
+    private List<Device> _bleDevices = new();
+    private Timer? _refreshTimer;
+    // Reserved for future REST-side polling (currently MQTT-only — see
+    // RefreshStatus). Kept declared so 248 lines below that branch on it
+    // continue to compile when the REST path is wired back in.
+    private HttpClient? _httpClient = null;
+
+    private bool _bridgeStateFromMqtt;
+
+    // theengs/gateway — the replacement for the dead devbis/ble2mqtt
+    // image — does NOT publish to bluetooth/bridge/state; it only
+    // announces birth/death on its own LWT topic and streams decoded
+    // BLE advertisements to bluetooth/<device>/.... So a strict wait
+    // on bluetooth/bridge/state leaves the pill stuck on "Offline"
+    // forever, even with a perfectly healthy bridge.
+    // Compute the displayed state from three signals: a genuine
+    // bridge-state MQTT message if one ever arrives (devbis path and
+    // future bridges), the /api/status HTTP probe if the translator
+    // serves one, and as a fallback the "configured + broker up"
+    // pair — which is what the user cares about visually anyway.
+    private bool BridgeOnline =>
+        _bridgeStateFromMqtt
+        || (!string.IsNullOrEmpty(_bleServiceUrl) && MqttService.IsConnected);
+    private int _messageCount;
+    private string _bleServiceUrl = "";
+
+    private bool _authHeaderSet;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _bleServiceUrl = Settings.Value.ProtocolTranslators.Ble2Mqtt.Url ?? "";
+        // theengs/gateway (the devbis replacement) has no /api/status
+        // endpoint — the UI derives bridge state from MQTT messages +
+        // the "configured + MQTT connected" fallback. No HttpClient
+        // needed; the old self-loopback via Navigation.BaseUri dialed
+        // localhost:42169 from inside the pod and logged a ECONNREFUSED
+        // every 2 s. Leaving _httpClient=null tells RefreshStatus to
+        // skip the probe entirely.
+
+        MqttService.MessageReceived += HandleMessage;
+        await LoadBleDevices();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await SetAuthHeader();
+        await RefreshStatus();
+        StateHasChanged();
+
+        _refreshTimer = new Timer(
+            _ => _ = InvokeAsync(async () =>
+            {
+                await RefreshStatus();
+                StateHasChanged();
+            }),
+            state: null,
+            dueTime: RefreshInterval,
+            period: RefreshInterval);
+    }
+
+    private async Task SetAuthHeader()
+    {
+        if (_authHeaderSet || _httpClient is null) return;
+        try
+        {
+            var token = await JS.InvokeAsync<string>("localStorage.getItem", "hermod_token")
+                        ?? await JS.InvokeAsync<string>("sessionStorage.getItem", "hermod_token");
+
+            if (!string.IsNullOrEmpty(token))
+            {
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+            _authHeaderSet = true;
+        }
+        catch
+        {
+            // JS interop unavailable during prerender; header populates on the next render.
+        }
+    }
+
+    private void HandleMessage(object? sender, MqttMessage message)
+    {
+        if (!message.Topic.StartsWith("bluetooth/")) return;
+
+        lock (_recentMessages)
+        {
+            _recentMessages.Add(message);
+            _messageCount++;
+            if (_recentMessages.Count > 100)
+                _recentMessages.RemoveAt(0);
+        }
+
+        if (message.Topic == "bluetooth/bridge/state")
+        {
+            _bridgeStateFromMqtt = TryParseBridgeStateOnline(message.Payload);
+        }
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    // BLE2MQTT (theengs-gateway) and the legacy devbis/ble2mqtt image
+    // disagree on bridge-state shape: the former publishes a bare JSON
+    // string "online"/"offline", the latter a JSON object
+    // {"state":"online"}. A strict JsonDocument object-parse misses the
+    // bare-string form and leaves the pill stuck on "Offline" even
+    // while MQTT is clearly carrying traffic.
+    private static bool TryParseBridgeStateOnline(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return false;
+        var trimmed = payload.Trim();
+
+        if (trimmed.StartsWith('{'))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                if (doc.RootElement.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.String)
+                    return string.Equals(s.GetString(), "online", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (JsonException) { }
+            return false;
+        }
+
+        if (trimmed.StartsWith('"') && trimmed.EndsWith('"') && trimmed.Length >= 2)
+            trimmed = trimmed[1..^1];
+
+        return string.Equals(trimmed, "online", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IEnumerable<MqttMessage> RecentMessagesSnapshot()
+    {
+        lock (_recentMessages)
+        {
+            return _recentMessages.ToArray();
+        }
+    }
+
+    private async Task RefreshStatus()
+    {
+        if (_httpClient is not null)
+        {
+            try
+            {
+                var response = await _httpClient.GetFromJsonAsync<BridgeStatus>("api/status", _pageCts.Token);
+                if (response is not null)
+                {
+                    _bridgeStateFromMqtt = response.BleConnected && response.MqttConnected;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                // theengs/gateway doesn't serve /api/status — the 404 is
+                // expected and not a health signal; leave the MQTT-derived
+                // state alone and let the fallback in BridgeOnline decide.
+                Logger.LogDebug(ex, "BLE2MQTT status poll failed (expected for theengs/gateway)");
+            }
+        }
+
+        await LoadBleDevices();
+    }
+
+    private async Task LoadBleDevices()
+    {
+        try
+        {
+            _bleDevices = (await DeviceService.GetDevicesByProtocolAsync(Protocol.Bluetooth, _pageCts.Token)).ToList();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load BLE devices");
+        }
+    }
+
+    private void ClearMessages()
+    {
+        lock (_recentMessages) { _recentMessages.Clear(); }
+        _messageCount = 0;
+    }
+
+    private static string FormatJson(string payload)
+    {
+        try
+        {
+            var obj = JsonSerializer.Deserialize<object>(payload);
+            return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return payload;
+        }
+    }
+
+    public void Dispose()
+    {
+        MqttService.MessageReceived -= HandleMessage;
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private sealed class BridgeStatus
+    {
+        public bool BleConnected { get; set; }
+        public bool MqttConnected { get; set; }
+        public string Mode { get; set; } = "";
+    }
+}

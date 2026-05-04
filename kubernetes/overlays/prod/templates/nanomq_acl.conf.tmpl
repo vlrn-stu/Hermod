@@ -1,0 +1,26 @@
+# nanomq ACL template — rendered at pod boot by nanomq-acl-init's
+# entrypoint, which substitutes ${COORD_USER} from the
+# hermod-mqtt-users Secret. Output goes to
+# /etc/nanomq/auth/nanomq_acl.conf (shared emptyDir between init and
+# main container).
+#
+# Format: JSON-style HOCON (matches NanoMQ's reference example).
+# Action is split into "publish" + "subscribe" rules per user; the
+# parser only reliably honours those two literals (not "all" or
+# "pubsub"). Coord gets full access; each translator gets full
+# pub+sub on its own protocol subtree; everyone else is denied.
+
+rules = [
+    {"permit": "allow", "username": "${COORD_USER}", "action": "publish",   "topics": ["#"]}
+    {"permit": "allow", "username": "${COORD_USER}", "action": "subscribe", "topics": ["#"]}
+    {"permit": "allow", "username": "zigbee2mqtt", "action": "publish",   "topics": ["zigbee/#"]}
+    {"permit": "allow", "username": "zigbee2mqtt", "action": "subscribe", "topics": ["zigbee/#"]}
+    {"permit": "allow", "username": "lora2mqtt", "action": "publish",   "topics": ["lora/#"]}
+    {"permit": "allow", "username": "lora2mqtt", "action": "subscribe", "topics": ["lora/#"]}
+    {"permit": "allow", "username": "wifi2mqtt-bridge", "action": "publish",   "topics": ["wifi/#"]}
+    {"permit": "allow", "username": "wifi2mqtt-bridge", "action": "subscribe", "topics": ["wifi/#"]}
+    {"permit": "allow", "username": "ble2mqtt", "action": "publish",   "topics": ["bluetooth/#"]}
+    {"permit": "allow", "username": "ble2mqtt", "action": "subscribe", "topics": ["bluetooth/#"]}
+    {"permit": "deny", "username": "#", "action": "publish",   "topics": ["#"]}
+    {"permit": "deny", "username": "#", "action": "subscribe", "topics": ["#"]}
+]

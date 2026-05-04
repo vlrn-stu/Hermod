@@ -1,0 +1,108 @@
+# vault42 prod — native HTTPS on :8443; DB_SSLMODE=require because
+# postgres-prod.yaml's pg_hba is hostssl-only.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault42-config
+  namespace: hermod
+data:
+  VAULT_PROFILE: "embedded"
+  LISTEN_ADDR: ":8443"
+  VAULT_AUTO_MIGRATE: "true"
+  VAULT_TLS_ENABLED: "true"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "vault"
+  DB_SSLMODE: "require"
+  CACHE_BACKEND: "memory"
+  VAULT_ORIGIN: "https://vault42.hermod-prod.svc.cluster.local:8443"
+  CORS_ORIGINS: "https://hermod-coordinator:42069,https://localhost:42069"
+  VAULT_SEED_FILE: "/app/seed/seed.json"
+  VAULT_MFA_REQUIRED: "false"
+  VAULT_PASSWORD_MIN_LENGTH: "15"
+  VAULT_MAX_SESSIONS_PER_USER: "5000"
+  # Per-IP rate limit on /auth/*. AuthProxyController forwards XFF so the
+  # source attacker IP is what vault42 keys against (not the coord pod).
+  VAULT_RATE_LIMIT_ENABLED: "true"
+  # Trust RFC1918 + ULA + loopback as proxies + read X-Forwarded-For for
+  # ClientIP. Required so the rate-limit + audit logs see real attacker IPs.
+  VAULT_EMBEDDED_TRUSTED_UPSTREAM: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault42
+  namespace: hermod
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 postgres.hermod-prod.svc.cluster.local 5432; do sleep 2; done
+      containers:
+        - name: vault42
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: VAULT_TLS_CERT_FILE
+              value: /etc/vault42/tls/tls.crt
+            - name: VAULT_TLS_KEY_FILE
+              value: /etc/vault42/tls/tls.key
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            failureThreshold: 30
+            periodSeconds: 5
+          volumeMounts:
+            - name: vault42-tls
+              mountPath: /etc/vault42/tls
+              readOnly: true
+      volumes:
+        - name: vault42-tls
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-vault42-server-tls
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key

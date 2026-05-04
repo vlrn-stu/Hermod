@@ -1,0 +1,21 @@
+---
+# verify.yml - Run health checks only, without changing anything.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/verify.yml
+#
+# This playbook is safe to run at any time. It does not modify the system.
+
+- name: Verify Hermod stack health
+  hosts: hermod_nodes
+  gather_facts: true
+
+  pre_tasks:
+    - name: verify | Announce start
+      ansible.builtin.debug:
+        msg: "Running Hermod health checks on {{ inventory_hostname }}"
+      tags: [always]
+
+  roles:
+    - role: healthcheck
+      tags: [healthcheck]

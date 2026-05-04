@@ -1,0 +1,152 @@
+---
+# site.yml - Full orchestrator: detects whether this is a first-time install or an update,
+# and runs the appropriate playbook.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+#
+# Detection logic:
+#   - If microk8s snap is not installed -> run install tasks
+#   - If microk8s is present but hermod namespace does not exist -> run install tasks
+#   - If hermod namespace exists -> run update tasks
+#
+# You can force a specific mode:
+#   ansible-playbook -i inventory/hosts.yml playbooks/site.yml -e hermod_force_install=true
+#   ansible-playbook -i inventory/hosts.yml playbooks/site.yml -e hermod_force_update=true
+
+- name: Detect Hermod deployment state
+  hosts: hermod_nodes
+  gather_facts: true
+
+  vars:
+    hermod_force_install: false
+    hermod_force_update: false
+
+  tasks:
+    - name: site | Check if microk8s is installed
+      ansible.builtin.command:
+        cmd: snap list microk8s
+      register: _snap_mk8s
+      changed_when: false
+      failed_when: false
+      tags: [always]
+
+    - name: site | Check if hermod namespace exists
+      ansible.builtin.command:
+        cmd: "microk8s kubectl get namespace {{ hermod_namespace }}"
+      register: _ns_exists
+      changed_when: false
+      failed_when: false
+      when: _snap_mk8s.rc == 0
+      tags: [always]
+
+    - name: site | Set _do_install fact
+      ansible.builtin.set_fact:
+        _do_install: >-
+          {{
+            hermod_force_install | bool
+            or _snap_mk8s.rc != 0
+            or (_ns_exists is defined and _ns_exists.rc != 0)
+          }}
+      tags: [always]
+
+    - name: site | Show determined action
+      ansible.builtin.debug:
+        msg: "Action: {{ 'INSTALL (first-time)' if _do_install else 'UPDATE (already deployed)' }}"
+      tags: [always]
+
+# ---------------------------------------------------------------------------
+# Branch: first-time install
+# ---------------------------------------------------------------------------
+
+- name: First-time install (when not already deployed)
+  hosts: hermod_nodes
+  gather_facts: false
+
+  pre_tasks:
+    - name: site/install | Skip if already deployed
+      ansible.builtin.meta: end_play
+      when: not hostvars[inventory_hostname]._do_install | bool
+
+  roles:
+    - role: base
+      tags: [base]
+    - role: microk8s
+      tags: [microk8s]
+    - role: usb_passthrough
+      tags: [usb]
+    - role: hermod_deploy
+      tags: [deploy]
+    - role: updater
+      tags: [updater]
+    - role: healthcheck
+      tags: [healthcheck]
+
+# ---------------------------------------------------------------------------
+# Branch: update existing deployment
+# ---------------------------------------------------------------------------
+
+- name: Update existing Hermod deployment
+  hosts: hermod_nodes
+  gather_facts: false
+
+  pre_tasks:
+    - name: site/update | Skip if this is a fresh install
+      ansible.builtin.meta: end_play
+      when: hostvars[inventory_hostname]._do_install | bool
+
+  tasks:
+    - name: site/update | Pull latest changes from git
+      ansible.builtin.git:
+        repo: "{{ hermod_git_remote }}"
+        dest: "{{ hermod_install_path }}"
+        version: "{{ hermod_git_branch }}"
+        force: false
+        update: true
+      become: true
+      become_user: "{{ hermod_user }}"
+      tags: [update, git]
+
+    # Ensure Secrets exist before kubectl apply -k (see update.yml
+    # for the full rationale).
+    - name: site/update | Ensure cluster Secrets via ensure-secrets.sh (keep mode)
+      ansible.builtin.shell:
+        # Force bash — pipefail is bash-only and Ubuntu's /bin/sh is dash.
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          KUBECTL='microk8s kubectl' \
+          HERMOD_SECRETS_MODE=keep \
+          bash -c "source '{{ hermod_install_path }}/Hermod/lib/ensure-secrets.sh' && ensure_secrets"
+      register: _ensure_secrets_update
+      changed_when: "'applying Secrets' in _ensure_secrets_update.stderr"
+      tags: [update, secrets]
+
+    - name: site/update | Apply updated kustomize manifests
+      ansible.builtin.command:
+        cmd: >
+          microk8s kubectl apply -k
+          {{ hermod_install_path }}/Hermod/kubernetes/{{ hermod_kustomize_overlay }}
+      register: _apply
+      changed_when: "'configured' in _apply.stdout or 'created' in _apply.stdout"
+      tags: [update, kubectl]
+
+    - name: site/update | Wait for pods
+      ansible.builtin.command:
+        cmd: >
+          microk8s kubectl wait pod
+          --all
+          --for=condition=ready
+          -n {{ hermod_namespace }}
+          --timeout={{ hermod_pod_wait_timeout }}s
+      changed_when: false
+      tags: [update, wait]
+
+    # Healthcheck must run AFTER git pull + kubectl apply complete.
+    # A play-level `roles:` key runs before `tasks:`, so it would
+    # validate the previous deployment. include_role inside tasks
+    # enforces the correct order while keeping the role's tags.
+    - name: site/update | Validate post-update health
+      ansible.builtin.include_role:
+        name: healthcheck
+      tags: [healthcheck]

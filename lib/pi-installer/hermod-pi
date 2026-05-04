@@ -1,0 +1,730 @@
+#!/usr/bin/env bash
+# hermod-pi — Raspberry Pi 5 provisioning tool for the Hermod IoT translator.
+# Ultra-safe by design: size guards, TOFU host-key pinning, dedicated ed25519 keys,
+# strict cloud-init validation. See README.md for the full security surface.
+
+set -euo pipefail
+
+readonly HERMOD_PI_TOOL_VERSION="0.1.0"
+export HERMOD_PI_TOOL_VERSION
+
+_resolve_script_dir() {
+    local src="${BASH_SOURCE[0]}"
+    while [[ -h "$src" ]]; do
+        local dir; dir=$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)
+        src=$(readlink "$src")
+        [[ $src != /* ]] && src="$dir/$src"
+    done
+    cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+SCRIPT_DIR=$(_resolve_script_dir); readonly SCRIPT_DIR
+readonly LIB_DIR="$SCRIPT_DIR/lib"
+readonly IMAGE_PREP_DIR="$SCRIPT_DIR/image-prep"
+
+# --- defaults (overridable by config file) -------------------------------------
+: "${HERMOD_PI_HOME:=$HOME/.hermod-pi}"
+: "${HERMOD_PI_OUTPUT_DIR:=$HERMOD_PI_HOME/images}"
+: "${HERMOD_PI_CONTAINER_ENGINE:=}"        # auto-detected if empty
+: "${HERMOD_PI_IMAGE_PREP_TAG:=hermod/image-prep:dev}"
+: "${HERMOD_PI_DEFAULT_USER:=hermod}"
+: "${HERMOD_PI_DEFAULT_TIMEZONE:=UTC}"
+: "${HERMOD_PI_ASSUME_YES:=}"
+: "${HERMOD_PI_LOG_LEVEL:=info}"
+: "${HERMOD_ANSIBLE_DIR:=}"                # auto-detected if empty
+export HERMOD_PI_HOME HERMOD_PI_OUTPUT_DIR HERMOD_PI_ASSUME_YES HERMOD_ANSIBLE_DIR
+
+# --- logging --------------------------------------------------------------------
+# Stderr-only; stdout reserved for structured output.
+_now()   { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+_info()  { printf '\033[0;36m[hermod-pi]\033[0m %s\n' "$*" >&2; }
+_warn()  { printf '\033[0;33m[hermod-pi WARN]\033[0m %s\n' "$*" >&2; }
+_err()   { printf '\033[0;31m[hermod-pi ERR]\033[0m %s\n' "$*" >&2; }
+_ok()    { printf '\033[0;32m[hermod-pi OK]\033[0m %s\n' "$*" >&2; }
+_die()   { _err "$*"; exit 1; }
+
+# --- config file loading -------------------------------------------------------
+# Precedence: local ./hermod-pi.conf → XDG config → defaults above.
+_load_tool_config() {
+    local loaded=0 path
+    for path in \
+        "./hermod-pi.conf" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/hermod-pi/config.conf" \
+    ; do
+        if [[ -f $path ]]; then
+            _info "loading tool config: $path"
+            # Restrict to known vars to avoid sourcing arbitrary code.
+            local line key val
+            while IFS= read -r line || [[ -n $line ]]; do
+                line="${line%%#*}"
+                line="${line#"${line%%[![:space:]]*}"}"
+                [[ -z $line ]] && continue
+                key="${line%%=*}"
+                val="${line#*=}"
+                val="${val#\"}"; val="${val%\"}"
+                val="${val#\'}"; val="${val%\'}"
+                case "$key" in
+                    HERMOD_PI_HOME|HERMOD_PI_OUTPUT_DIR|HERMOD_PI_CONTAINER_ENGINE| \
+                    HERMOD_PI_IMAGE_PREP_TAG|HERMOD_PI_DEFAULT_USER| \
+                    HERMOD_PI_DEFAULT_TIMEZONE|HERMOD_PI_LOG_LEVEL| \
+                    HERMOD_ANSIBLE_DIR)
+                        eval "${key}=$(printf '%q' "$val")"
+                        export "${key?}"
+                        ;;
+                    *)
+                        _warn "ignoring unknown config key in $path: $key"
+                        ;;
+                esac
+            done < "$path"
+            loaded=1
+            break
+        fi
+    done
+    [[ $loaded -eq 0 ]] && _info "no tool config found — using built-in defaults"
+}
+
+# --- source libraries ----------------------------------------------------------
+for lib in device_guard.sh ssh_keys.sh ansible_wrapper.sh; do
+    [[ -f "$LIB_DIR/$lib" ]] || _die "missing library: $LIB_DIR/$lib"
+    # shellcheck source=/dev/null
+    source "$LIB_DIR/$lib"
+done
+
+# Libs define their own logger helpers with their own prefixes; we re-define ours
+# AFTER sourcing so the cli prefix stays [hermod-pi].
+_info()  { printf '\033[0;36m[hermod-pi]\033[0m %s\n' "$*" >&2; }
+_warn()  { printf '\033[0;33m[hermod-pi WARN]\033[0m %s\n' "$*" >&2; }
+_err()   { printf '\033[0;31m[hermod-pi ERR]\033[0m %s\n' "$*" >&2; }
+_ok()    { printf '\033[0;32m[hermod-pi OK]\033[0m %s\n' "$*" >&2; }
+_die()   { _err "$*"; exit 1; }
+
+# --- platform + dependency detection ------------------------------------------
+_detect_os() {
+    case "$(uname -s)" in
+        Linux*)
+            if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+                echo "wsl"
+            elif [[ -f /etc/os-release ]]; then
+                . /etc/os-release
+                echo "linux:${ID:-unknown}"
+            else
+                echo "linux:unknown"
+            fi
+            ;;
+        Darwin*) echo "macos" ;;
+        MINGW*|CYGWIN*|MSYS*) echo "windows" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+_install_hint() {
+    # Args: <generic-pkg> — prints OS-appropriate install command to stderr.
+    local pkg="$1" os; os=$(_detect_os)
+    case "$os" in
+        linux:fedora|linux:rhel|linux:centos) printf 'sudo dnf install -y %s\n' "$pkg" ;;
+        linux:debian|linux:ubuntu|wsl) printf 'sudo apt-get update && sudo apt-get install -y %s\n' "$pkg" ;;
+        linux:arch|linux:manjaro) printf 'sudo pacman -S --noconfirm %s\n' "$pkg" ;;
+        linux:alpine) printf 'sudo apk add %s\n' "$pkg" ;;
+        macos) printf 'brew install %s\n' "$pkg" ;;
+        windows) printf 'winget install %s  # or run the PowerShell sibling\n' "$pkg" ;;
+        *) printf '# install %s via your platform package manager\n' "$pkg" ;;
+    esac
+}
+
+_pick_container_engine() {
+    if [[ -n $HERMOD_PI_CONTAINER_ENGINE ]]; then
+        command -v "$HERMOD_PI_CONTAINER_ENGINE" >/dev/null 2>&1 || \
+            _die "configured container engine '$HERMOD_PI_CONTAINER_ENGINE' not found"
+        printf '%s\n' "$HERMOD_PI_CONTAINER_ENGINE"
+        return
+    fi
+    for c in podman docker; do
+        if command -v "$c" >/dev/null 2>&1; then
+            printf '%s\n' "$c"
+            return
+        fi
+    done
+    _err "no container engine found. install one of:"
+    _install_hint "podman" >&2
+    _install_hint "docker" >&2
+    return 1
+}
+
+_check_command() {
+    local cmd="$1" pkg="${2:-$1}"
+    if command -v "$cmd" >/dev/null 2>&1; then
+        return 0
+    fi
+    _err "missing dependency: $cmd"
+    printf '  install with: ' >&2; _install_hint "$pkg" >&2
+    return 1
+}
+
+cmd_config_check() {
+    local fail=0
+    _info "tool version: $HERMOD_PI_TOOL_VERSION"
+    _info "platform:     $(_detect_os)"
+    _info "HERMOD_PI_HOME=$HERMOD_PI_HOME"
+    _info "output dir:   $HERMOD_PI_OUTPUT_DIR"
+
+    _info "checking dependencies..."
+    _check_command jq         || fail=1
+    _check_command ssh-keygen openssh-client || fail=1
+    _check_command ssh-keyscan openssh-client || fail=1
+    _check_command ansible-playbook ansible || fail=1
+    if _find_rpi_imager >/dev/null 2>&1; then
+        _ok "rpi-imager: $(_find_rpi_imager)"
+    else
+        _err "missing dependency: rpi-imager (no native or flatpak install found)"
+        printf '  install with: ' >&2; _install_hint "rpi-imager" >&2
+        printf '  or flatpak:   flatpak install --user -y flathub org.raspberrypi.rpi-imager\n' >&2
+        fail=1
+    fi
+
+    if ! _pick_container_engine >/dev/null 2>&1; then
+        fail=1
+    else
+        _ok "container engine: $(_pick_container_engine)"
+    fi
+
+    case "$(_detect_os)" in
+        macos) _check_command dns-sd || fail=1 ;;
+        *)     _check_command avahi-resolve avahi-utils || fail=1 ;;
+    esac
+
+    if ! ansible::check_deps >/dev/null 2>&1; then
+        _warn "ansible wrapper reports missing deps — run: hermod-pi config-check"
+        fail=1
+    fi
+
+    if [[ $fail -eq 0 ]]; then
+        _ok "all dependencies present"
+    else
+        _err "dependency check failed — see above"
+        return 1
+    fi
+}
+
+# --- hostname extraction from config.yaml (minimal, avoids dragging in python) -
+_hostname_from_config() {
+    local cfg="$1"
+    [[ -f $cfg ]] || _die "config not found: $cfg"
+    local h
+    h=$(awk -F': *' '/^hostname:/ { gsub(/["'\'']/, "", $2); print $2; exit }' "$cfg")
+    [[ -n $h ]] || _die "config missing required field: hostname"
+    [[ $h =~ ^[a-z][a-z0-9-]{0,62}$ ]] || _die "invalid hostname in config: $h"
+    printf '%s\n' "$h"
+}
+
+# --- image-prep container build + run -----------------------------------------
+_ensure_image_prep_built() {
+    local engine; engine=$(_pick_container_engine)
+    if "$engine" image inspect "$HERMOD_PI_IMAGE_PREP_TAG" >/dev/null 2>&1; then
+        _info "image-prep container already built"
+        return 0
+    fi
+    _info "building image-prep container ($HERMOD_PI_IMAGE_PREP_TAG)..."
+    "$engine" build -t "$HERMOD_PI_IMAGE_PREP_TAG" "$IMAGE_PREP_DIR"
+    _ok "image-prep built"
+}
+
+_run_image_prep() {
+    local cfg_path="$1" pubkey_path="$2" out_dir="$3"
+    local engine; engine=$(_pick_container_engine)
+
+    mkdir -p "$out_dir" "$HERMOD_PI_HOME/cache"
+    chmod 0700 "$out_dir" "$HERMOD_PI_HOME/cache" 2>/dev/null || true
+
+    # mtools-based injection needs no kernel privileges — the container can run
+    # fully unprivileged under rootless podman. Opt into --privileged only if
+    # the caller explicitly demands it (e.g. testing the older loopback path).
+    local privflags=()
+    if [[ ${HERMOD_PI_FORCE_PRIVILEGED:-0} == 1 ]]; then
+        privflags=(--privileged)
+    fi
+
+    # SELinux systems (Fedora/RHEL) need z/Z relabeling or containers hit EACCES.
+    # Combined with :ro via comma — `:ro,z` not `:ro:z`.
+    local rw_opt="" ro_opt="ro"
+    case "$(_detect_os)" in linux:fedora|linux:rhel|linux:centos)
+        rw_opt="z"; ro_opt="ro,z" ;;
+    esac
+
+    _info "running image-prep..."
+    "$engine" run --rm "${privflags[@]}" \
+        -e HERMOD_PI_VERSION="$HERMOD_PI_TOOL_VERSION" \
+        ${HERMOD_PI_SKIP_BUILD:+-e HERMOD_PI_SKIP_BUILD="$HERMOD_PI_SKIP_BUILD"} \
+        -v "$out_dir:/output${rw_opt:+:$rw_opt}" \
+        -v "$HERMOD_PI_HOME/cache:/cache${rw_opt:+:$rw_opt}" \
+        -v "$cfg_path:/config.yaml:$ro_opt" \
+        -v "$pubkey_path:/pubkey.pub:$ro_opt" \
+        "$HERMOD_PI_IMAGE_PREP_TAG"
+}
+
+# --- device pick + flash -------------------------------------------------------
+_pick_target_device() {
+    local device="${1:-}"
+    if [[ -n $device ]]; then
+        printf '%s\n' "$device"
+        return
+    fi
+    local candidates; mapfile -t candidates < <(device_guard::list_candidates)
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        _die "no removable candidate devices found — insert an SD card reader"
+    fi
+    if [[ ${#candidates[@]} -eq 1 ]]; then
+        _info "auto-selected sole candidate: ${candidates[0]}"
+        printf '%s\n' "${candidates[0]}"
+        return
+    fi
+    _info "multiple candidates found:" >&2
+    local i=1
+    for d in "${candidates[@]}"; do
+        device_guard::human_info "$d" >&2
+        printf '  [%d] %s\n' "$i" "$d" >&2
+        ((i++))
+    done
+    read -r -p "select candidate (1-${#candidates[@]}): " pick </dev/tty
+    [[ $pick =~ ^[0-9]+$ && $pick -ge 1 && $pick -le ${#candidates[@]} ]] || \
+        _die "invalid selection"
+    printf '%s\n' "${candidates[$((pick - 1))]}"
+}
+
+_find_rpi_imager() {
+    # Kept for the optional --use-imager fallback path.
+    if command -v rpi-imager >/dev/null 2>&1; then
+        printf 'rpi-imager\n'; return 0
+    fi
+    if command -v flatpak >/dev/null 2>&1 && \
+       flatpak info org.raspberrypi.rpi-imager >/dev/null 2>&1; then
+        printf 'flatpak-run-rpi-imager\n'; return 0
+    fi
+    case "$(_detect_os)" in
+        macos)
+            [[ -d "/Applications/Raspberry Pi Imager.app" ]] && {
+                printf 'macos-open\n'; return 0; }
+            ;;
+    esac
+    return 1
+}
+
+_launch_rpi_imager() {
+    # Fallback-only path, opt-in via `hermod-pi flash ... --use-imager`.
+    local image_path="$1"
+    local runner; runner=$(_find_rpi_imager) || _die "rpi-imager not found"
+    _info "launching rpi-imager (fallback) with: $image_path"
+    case "$runner" in
+        rpi-imager)             rpi-imager "$image_path" &>/dev/null & disown ;;
+        flatpak-run-rpi-imager) flatpak run org.raspberrypi.rpi-imager "$image_path" &>/dev/null & disown ;;
+        macos-open)             open -a "Raspberry Pi Imager" "$image_path" ;;
+    esac
+}
+
+# --- native cross-platform flasher ---------------------------------------------
+# Writes .img.xz directly to the target block device with platform-native
+# privilege escalation. rpi-imager is available as a fallback via
+# `--use-imager`.
+_flash_native() {
+    local img="$1" dev="$2"
+    [[ -f $img ]] || _die "image not found: $img"
+    [[ -n $dev ]] || _die "device path empty"
+    local os; os=$(_detect_os)
+
+    # Decompressor — xz required. Keep it explicit so errors surface early.
+    command -v xz >/dev/null 2>&1 || _die "missing dependency: xz (install xz-utils / xz)"
+
+    # Record in audit log before the write so we have provenance even if the
+    # write is interrupted.
+    local audit="$HERMOD_PI_HOME/audit.log"
+    mkdir -p "$HERMOD_PI_HOME" && chmod 0700 "$HERMOD_PI_HOME" 2>/dev/null || true
+    printf '{"ts":"%s","event":"flash_begin","img":"%s","device":"%s","tool_version":"%s","user":"%s","platform":"%s"}\n' \
+        "$(_now)" "$img" "$dev" "$HERMOD_PI_TOOL_VERSION" "${USER:-unknown}" "$os" \
+        >> "$audit" 2>/dev/null || true
+
+    case "$os" in
+        wsl)
+            _die "WSL cannot write host block devices directly. Use rpi-imager on the Windows side, or pass --use-imager. Image: $img"
+            ;;
+        macos)
+            # Use /dev/rdiskN (raw/char device) — order of magnitude faster.
+            # Whole pipeline (write+verify+eject) in one admin-privileges call.
+            local rdev="${dev/\/dev\/disk/\/dev\/rdisk}"
+            [[ $rdev == /dev/rdisk* ]] || _die "expected /dev/diskN on macOS, got $dev"
+            local do_verify=1
+            [[ ${HERMOD_PI_NO_VERIFY:-0} == 1 ]] && do_verify=0
+            local do_eject=1
+            [[ ${HERMOD_PI_NO_EJECT:-0} == 1 ]] && do_eject=0
+            _info "unmounting partitions on $dev"
+            diskutil unmountDisk "$dev" >/dev/null 2>&1 || true
+            _info "flashing + verifying + ejecting $rdev (one Touch ID / admin prompt)"
+            local verify_step=""
+            if [[ $do_verify -eq 1 ]]; then
+                local uncomp_size
+                uncomp_size=$(xz --robot -l "$img" 2>/dev/null | awk '/^totals/ {print $5; exit}')
+                if [[ -n $uncomp_size && $uncomp_size -gt 0 ]]; then
+                    verify_step="/usr/bin/xz -dc $(printf %q "$img") | /usr/bin/cmp -n $uncomp_size - $(printf %q "$rdev") || exit 42; "
+                fi
+            fi
+            local eject_step=""
+            [[ $do_eject -eq 1 ]] && eject_step="/usr/sbin/diskutil eject $(printf %q "$dev"); "
+            local cmd
+            cmd="/usr/bin/xz -dc $(printf %q "$img") | /bin/dd of=$(printf %q "$rdev") bs=4m conv=sync && /bin/sync; $verify_step$eject_step"
+            osascript -e "do shell script \"$cmd\" with administrator privileges" \
+                || _die "flash pipeline failed (cancelled, dd error, or verify mismatch)"
+            ;;
+        linux:*|linux|"")
+            # Escalate via pkexec (graphical polkit) — falls back to sudo.
+            # All work happens in ONE elevated shell: unmount, write, sync,
+            # verify (cmp), eject. No second password prompt.
+            local xz_bin dd_bin
+            xz_bin=$(command -v xz) || _die "xz not found on PATH"
+            dd_bin=$(command -v dd) || _die "dd not found on PATH"
+            local partprobe_bin cmp_bin eject_bin udisksctl_bin
+            partprobe_bin=$(command -v partprobe || true)
+            cmp_bin=$(command -v cmp || true)
+            eject_bin=$(command -v eject || true)
+            udisksctl_bin=$(command -v udisksctl || true)
+            local do_verify=1
+            [[ ${HERMOD_PI_NO_VERIFY:-0} == 1 ]] && do_verify=0
+            local do_eject=1
+            [[ ${HERMOD_PI_NO_EJECT:-0} == 1 ]] && do_eject=0
+            [[ $do_verify -eq 1 && -z $cmp_bin ]] && _die "verify requested but 'cmp' not on PATH"
+
+            local script
+            # shellcheck disable=SC2016  # intentional literal $dev etc in script
+            script=$(cat <<-EOF
+				set -e
+				dev='$dev'
+				img='$img'
+				# 1. Unmount any mounted partitions on the target.
+				for p in \${dev}* ; do
+				    [ "\$p" = "\$dev" ] && continue
+				    umount "\$p" 2>/dev/null || true
+				done
+				# 2. Write (with real progress to stderr).
+				echo ">>> writing \$img -> \$dev" >&2
+				$xz_bin -dc "\$img" | $dd_bin of="\$dev" bs=4M status=progress conv=fsync,noerror
+				sync
+				${partprobe_bin:-true} "\$dev" 2>/dev/null || true
+				# 3. Verify: cmp the exact decompressed bytes against the device.
+				#    cmp reads from stdin and stops at EOF, which exits non-zero
+				#    because the device is larger. Pass -n <bytes> to bound the
+				#    comparison to exactly what we wrote.
+				if [ $do_verify -eq 1 ]; then
+				    echo ">>> verifying (byte-exact cmp of $img) ..." >&2
+				    uncomp_size=\$($xz_bin --robot -l "\$img" | awk '/^totals/ {print \$5; exit}')
+				    if [ -z "\$uncomp_size" ] || [ "\$uncomp_size" -le 0 ]; then
+				        echo "!!! couldn't determine uncompressed image size — skipping verify" >&2
+				    else
+				        $xz_bin -dc "\$img" | $cmp_bin -n "\$uncomp_size" - "\$dev" >&2 || {
+				            echo "!!! verify FAILED (differs within \$uncomp_size bytes) — bad card or dd error" >&2
+				            exit 42
+				        }
+				        echo ">>> verify OK (\$uncomp_size bytes match)" >&2
+				    fi
+				fi
+				# 4. Eject: eject(1) -> udisksctl -> plain sync. Whichever works.
+				if [ $do_eject -eq 1 ]; then
+				    if [ -n "${eject_bin:-}" ] && $eject_bin "\$dev" 2>/dev/null; then
+				        echo ">>> ejected \$dev" >&2
+				    elif [ -n "${udisksctl_bin:-}" ] && $udisksctl_bin power-off -b "\$dev" 2>/dev/null; then
+				        echo ">>> powered off \$dev (udisks2)" >&2
+				    else
+				        sync
+				        echo ">>> no eject tool; flushed only — safe to pull if no activity LED" >&2
+				    fi
+				fi
+			EOF
+            )
+            _info "flashing + verifying + ejecting $dev  (one auth prompt for the whole op)"
+            if command -v pkexec >/dev/null 2>&1; then
+                pkexec sh -c "$script" || _die "flash pipeline failed (cancelled, dd error, or verify mismatch)"
+            elif command -v sudo >/dev/null 2>&1; then
+                sudo sh -c "$script" || _die "flash pipeline failed (cancelled, dd error, or verify mismatch)"
+            else
+                _die "no privilege escalation available (pkexec or sudo); cannot flash"
+            fi
+            ;;
+        *)
+            _die "platform '$os': no native flash path implemented; use --use-imager with a pre-installed rpi-imager"
+            ;;
+    esac
+
+    printf '{"ts":"%s","event":"flash_complete","img":"%s","device":"%s","tool_version":"%s","user":"%s"}\n' \
+        "$(_now)" "$img" "$dev" "$HERMOD_PI_TOOL_VERSION" "${USER:-unknown}" \
+        >> "$audit" 2>/dev/null || true
+    _ok "flash complete on $dev"
+}
+
+cmd_flash() {
+    local cfg="" target="" use_imager=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --use-imager)        use_imager=1; shift ;;
+            -h|--help)
+                cat >&2 <<EOF
+usage: hermod-pi flash <config.yaml> [<device>] [--use-imager]
+  Default:     native xz|dd with pkexec / osascript (cross-platform)
+  --use-imager launches rpi-imager GUI with the prepared image as fallback
+EOF
+                return 0
+                ;;
+            --) shift; break ;;
+            -*) _die "unknown flag: $1" ;;
+            *)  [[ -z $cfg ]] && { cfg="$1"; shift; continue; }
+                [[ -z $target ]] && { target="$1"; shift; continue; }
+                _die "unexpected arg: $1" ;;
+        esac
+    done
+    [[ -n $cfg ]] || _die "usage: hermod-pi flash <config.yaml> [<device>] [--use-imager]"
+
+    local host; host=$(_hostname_from_config "$cfg")
+    _info "provisioning config for host: $host"
+
+    # Stage deps
+    cmd_config_check >/dev/null || _die "dependency check failed"
+
+    # SSH key
+    ssh_keys::init
+    if ssh_keys::exists "$host"; then
+        _info "reusing existing SSH keypair for $host"
+    else
+        _info "generating dedicated ed25519 keypair for $host"
+        ssh_keys::generate "$host"
+    fi
+    local pubkey_path; pubkey_path=$(ssh_keys::pubkey_path "$host")
+
+    # Stage the pubkey into a world-readable tmpfile for the container UID mapping.
+    local pubkey_stage
+    pubkey_stage=$(mktemp)
+    # shellcheck disable=SC2064  # expand now, on purpose
+    trap "rm -f '$pubkey_stage'" EXIT
+    cp "$pubkey_path" "$pubkey_stage"
+    chmod 0644 "$pubkey_stage"
+
+    # Build + run image-prep
+    _ensure_image_prep_built
+    _run_image_prep "$(realpath "$cfg")" "$pubkey_stage" "$HERMOD_PI_OUTPUT_DIR"
+
+    # In dry-run mode the container writes .preview artefacts instead of an image.
+    if [[ ${HERMOD_PI_SKIP_BUILD:-0} == 1 ]]; then
+        _ok "dry-run complete — rendered artefacts in $HERMOD_PI_OUTPUT_DIR"
+        find "$HERMOD_PI_OUTPUT_DIR" -maxdepth 1 -name '*.preview*' -printf '  %f  (%s bytes)\n' >&2 || true
+        return 0
+    fi
+
+    # Find the produced image (latest by mtime). The `|| true` keeps the
+    # pipeline alive when `head -n1` closes early under set -o pipefail
+    # (sort gets SIGPIPE → 141 propagates to the assignment, aborting the
+    # install before the empty-img check below runs).
+    local img
+    img=$(find "$HERMOD_PI_OUTPUT_DIR" -maxdepth 1 -name "hermod-pi-${host}-*.img.xz" \
+            -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | awk '{print $2}' || true)
+    [[ -n $img && -f $img ]] || _die "image-prep did not produce expected .img.xz"
+    _ok "image produced: $img"
+    local dev; dev=$(_pick_target_device "$target")
+
+    if ! device_guard::check "$dev"; then
+        _die "device guard rejected $dev"
+    fi
+    if ! device_guard::confirm "$dev"; then
+        _die "flash aborted by user"
+    fi
+
+    if [[ $use_imager -eq 1 ]]; then
+        _launch_rpi_imager "$img"
+        _ok "rpi-imager launched. after writing, run: hermod-pi wait $host"
+    else
+        _flash_native "$img" "$dev"
+        _ok "SD is ready. insert in Pi, power on with Ethernet, then: hermod-pi wait $host"
+    fi
+}
+
+# --- wait: mDNS + SSH + first-boot marker -------------------------------------
+cmd_wait() {
+    local host="" timeout=300 disc_extra=()
+    while (( $# > 0 )); do
+        case "$1" in
+            --arp-only) disc_extra+=(--arp-only) ;;
+            --re-pin)   export HERMOD_PI_FORCE_REPIN=1 ;;
+            --ip=*)     disc_extra+=("$1") ;;
+            --timeout=*) timeout=${1#*=} ;;
+            --*)        _die "unknown flag: $1 (try --arp-only --re-pin --ip=ADDR --timeout=N)" ;;
+            *)          if [[ -z $host ]]; then host=$1
+                        else timeout=$1; fi ;;
+        esac
+        shift
+    done
+    [[ -n $host ]] || _die "usage: hermod-pi wait <hostname> [timeout_sec] [--arp-only] [--re-pin] [--ip=ADDR]"
+
+    local ip
+    ip=$(ansible::discover "$host" --timeout="$timeout" "${disc_extra[@]}")
+    _ok "pi reachable at $ip"
+
+    # TOFU pin — first boot will have fresh host keys (we regenerate in cloud-init)
+    if ! ssh_keys::host_key_pin "$host" "$ip"; then
+        _warn "host_key_pin reported an issue — review the audit log"
+    fi
+
+    _info "checking first-boot marker (/etc/hermod-pi/provisioned.json)..."
+    local key; key=$(ssh_keys::privkey_path "$host")
+    local tries=0 max_tries=30
+    while (( tries < max_tries )); do
+        if ssh -i "$key" \
+               -o UserKnownHostsFile="$HERMOD_PI_HOME/known_hosts" \
+               -o StrictHostKeyChecking=yes \
+               -o ConnectTimeout=5 \
+               "${HERMOD_PI_DEFAULT_USER}@${ip}" \
+               'cat /etc/hermod-pi/provisioned.json' 2>/dev/null; then
+            _ok "first-boot marker present — cloud-init finished"
+            # Persist the discovered IP into the inventory so a subsequent
+            # `hermod.sh config init` (or any consumer reading the inventory)
+            # picks up the actual lease, not whatever stale value the
+            # operator config used to hold.
+            ansible::generate_inventory "$host" "$ip" "$key" "$HERMOD_PI_DEFAULT_USER" \
+                >/dev/null && _ok "inventory refreshed: $(_aw::inventory_path "$host")"
+            printf '%s\n' "$ip"
+            return 0
+        fi
+        sleep 10
+        ((tries++))
+    done
+    _die "first-boot marker not appearing after $((max_tries * 10))s — check cloud-init status on the pi"
+}
+
+# --- deploy: ansible install ---------------------------------------------------
+cmd_deploy() {
+    local host="${1:-}"
+    local git_remote="${HERMOD_GIT_REMOTE:-}"
+    # Default to rsync mode using the repo that contains this tool — great for
+    # private repos where git-over-SSH isn't wired up on the Pi.
+    local src_mode="${HERMOD_SOURCE_MODE:-rsync}"
+    local src_dir="${HERMOD_SOURCE_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+    [[ -n $host ]] || _die "usage: hermod-pi deploy <hostname>"
+    if [[ $src_mode == git && -z $git_remote ]]; then
+        _die "HERMOD_GIT_REMOTE env must be set when HERMOD_SOURCE_MODE=git"
+    fi
+    if [[ $src_mode == rsync ]]; then
+        [[ -d $src_dir ]] || _die "HERMOD_SOURCE_DIR not a directory: $src_dir"
+        _info "source mode: rsync from $src_dir"
+    else
+        _info "source mode: git clone $git_remote"
+    fi
+
+    ssh_keys::exists "$host" || _die "no ssh keypair for $host — run flash first"
+
+    # Derive IP from known_hosts first line match
+    local ip
+    ip=$(awk -v h="$host," '$0 ~ "^" h { split($1, parts, ","); print parts[2]; exit }' \
+            "$HERMOD_PI_HOME/known_hosts" 2>/dev/null || true)
+    if [[ -z $ip ]]; then
+        _info "no pinned IP — running discover"
+        ip=$(ansible::discover "$host" --timeout=60)
+        ssh_keys::host_key_pin "$host" "$ip" || _die "host_key_pin failed"
+    fi
+
+    local key; key=$(ssh_keys::privkey_path "$host")
+    ansible::generate_inventory "$host" "$ip" "$key" "$HERMOD_PI_DEFAULT_USER"
+    local extra_vars=()
+    if [[ $src_mode == rsync ]]; then
+        extra_vars+=("hermod_source_mode=rsync" "hermod_source_dir=$src_dir")
+    else
+        extra_vars+=("hermod_source_mode=git" "hermod_git_remote=$git_remote")
+    fi
+    ansible::run_playbook install "$host" "${extra_vars[@]}"
+}
+
+cmd_status() {
+    local host="${1:-}"
+    [[ -n $host ]] || _die "usage: hermod-pi status <hostname>"
+    ansible::verify "$host"
+}
+
+cmd_uninstall() {
+    local host="${1:-}"
+    [[ -n $host ]] || _die "usage: hermod-pi uninstall <hostname>"
+    ansible::uninstall "$host"
+}
+
+cmd_list() {
+    ssh_keys::list
+}
+
+cmd_all() {
+    local cfg="${1:-}" dev="${2:-}"
+    [[ -n $cfg ]] || _die "usage: hermod-pi all <config.yaml> [<device>]"
+    local host; host=$(_hostname_from_config "$cfg")
+
+    cmd_flash "$cfg" "$dev"
+
+    _info ""
+    _info "========================================================"
+    _info " When the SD card is in the Pi and it is powered on,"
+    _info " press ENTER to continue with Stage 2 (ansible deploy)."
+    _info "========================================================"
+    read -r </dev/tty
+
+    cmd_wait "$host"
+    cmd_deploy "$host"
+    cmd_status "$host"
+    _ok "E2E complete — Hermod deployed on $host"
+}
+
+# --- usage ---------------------------------------------------------------------
+usage() {
+    cat >&2 <<EOF
+hermod-pi v$HERMOD_PI_TOOL_VERSION — Raspberry Pi 5 provisioning for Hermod
+
+USAGE
+  hermod-pi <command> [args]
+
+COMMANDS
+  config-check                         validate tool setup + dependencies
+  flash <config.yaml> [<device>]       Stage 1: prep image + launch rpi-imager
+  wait <hostname> [timeout_sec]        Stage 2a: wait for Pi first boot + SSH
+  deploy <hostname>                    Stage 2b: run ansible install.yml
+  status <hostname>                    run ansible verify.yml health checks
+  uninstall <hostname>                 run ansible uninstall.yml (destructive)
+  list                                 list all managed Pi keypairs
+  all <config.yaml> [<device>]         full end-to-end flow
+  help                                 this text
+
+ENV
+  HERMOD_GIT_REMOTE    required for 'deploy' — URL of the Hermod repo
+  HERMOD_PI_HOME       state dir (default: \$HOME/.hermod-pi)
+  HERMOD_PI_SKIP_BUILD set to 1 for dry-runs (no image write, no flash)
+  HERMOD_PI_ASSUME_YES skip interactive confirmations (USE WITH CARE)
+
+CONFIG FILES (first found wins)
+  ./hermod-pi.conf
+  \$XDG_CONFIG_HOME/hermod-pi/config.conf
+
+SECURITY
+  - dedicated ed25519 keypair per Pi (stored 0600 under \$HERMOD_PI_HOME/keys/)
+  - target device size is capped at 256 GiB (bypass requires explicit env opt-in)
+  - TOFU host-key pinning in \$HERMOD_PI_HOME/known_hosts (StrictHostKeyChecking=yes)
+  - audit log at \$HERMOD_PI_HOME/audit.log (append-only JSONL)
+
+Run 'hermod-pi config-check' after install to verify your environment.
+EOF
+}
+
+main() {
+    _load_tool_config
+    local cmd="${1:-help}"
+    shift || true
+    case "$cmd" in
+        config-check|check)       cmd_config_check "$@" ;;
+        flash)                    cmd_flash "$@" ;;
+        wait)                     cmd_wait "$@" ;;
+        deploy)                   cmd_deploy "$@" ;;
+        status|verify)            cmd_status "$@" ;;
+        uninstall)                cmd_uninstall "$@" ;;
+        list)                     cmd_list "$@" ;;
+        all)                      cmd_all "$@" ;;
+        version|--version|-v)     printf 'hermod-pi %s\n' "$HERMOD_PI_TOOL_VERSION" ;;
+        help|-h|--help|"")        usage ;;
+        *)                        _err "unknown command: $cmd"; usage; exit 2 ;;
+    esac
+}
+
+main "$@"

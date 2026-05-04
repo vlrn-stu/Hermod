@@ -1,0 +1,20 @@
+# ansible-lint configuration for Hermod Ansible deployment.
+# https://ansible-lint.readthedocs.io/configuring/
+
+# Profile: basic covers all rules except style-only ones we explicitly skip.
+profile: basic
+
+# Suppress name[casing] - task names intentionally use "role | verb" prefix style
+# (e.g. "base | Update apt cache") which starts with a role name, not a capital letter.
+#
+# Suppress var-naming[no-role-prefix] - shared hermod_* variables are intentionally
+# defined in group_vars/all.yml and referenced across roles; requiring per-role
+# prefixes would break that shared variable design.
+skip_list:
+  - name[casing]
+  - var-naming[no-role-prefix]
+
+# Warn on these rather than failing
+warn_list:
+  - name[template]
+  - no-handler

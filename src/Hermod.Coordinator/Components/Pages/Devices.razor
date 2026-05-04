@@ -1,0 +1,670 @@
+@page "/devices"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IDeviceService DeviceService
+@inject IZigbee2MqttService ZigbeeService
+@inject NavigationManager Nav
+@inject ILogger<Devices> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Devices - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_errorMessage</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="LoadDevicesClicked">Retry</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">Connected Devices</h1>
+        <p class="text-muted mb-0">Manage and monitor all connected IoT devices</p>
+    </div>
+    <button class="btn btn-primary" @onclick="LoadDevicesClicked">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+            <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+            <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+        </svg>
+        Refresh
+    </button>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Total Devices</h6>
+                <h2 class="mb-0 fw-bold">@TotalCount.ToString("N0")</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Online</h6>
+                <h2 class="mb-0 fw-bold">@OnlineCount.ToString("N0")</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100" style="background: var(--hermod-danger);">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Offline</h6>
+                <h2 class="mb-0 fw-bold">@OfflineCount.ToString("N0")</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Protocols</h6>
+                <h2 class="mb-0 fw-bold">@ProtocolCount</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search + pagination toolbar -->
+<div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+    <input type="search" class="form-control" style="max-width: 320px;"
+           placeholder="Search id / name…" value="@_searchQuery"
+           @onchange="@(async (e) => await OnSearchChanged(e.Value?.ToString()))" />
+    <div class="btn-group btn-group-sm ms-auto" role="group">
+        <button type="button" class="btn btn-outline-secondary" @onclick="PrevPage" disabled="@(!CanPrev)">&laquo; Prev</button>
+        <span class="btn btn-outline-secondary disabled">@PageDescription</span>
+        <button type="button" class="btn btn-outline-secondary" @onclick="NextPage" disabled="@(!CanNext)">Next &raquo;</button>
+    </div>
+    <select class="form-select form-select-sm" style="max-width: 110px;"
+            value="@_pageSize" @onchange="@(async (e) => await OnPageSizeChanged(e.Value?.ToString()))">
+        <option value="50">50 / page</option>
+        <option value="100">100 / page</option>
+        <option value="250">250 / page</option>
+        <option value="500">500 / page</option>
+    </select>
+</div>
+
+<!-- Filter Tabs -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body p-0">
+        <div class="protocol-tabs">
+            <button class="protocol-tab @(_selectedProtocol == null ? "active" : "")" @onclick="() => FilterByProtocol(null)">
+                <span class="tab-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M6 1a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3V4a3 3 0 0 0-3-3H6z"/>
+                    </svg>
+                </span>
+                All (@TotalCount.ToString("N0"))
+            </button>
+            <button class="protocol-tab zigbee @(_selectedProtocol == Protocol.Zigbee ? "active" : "")" @onclick="() => FilterByProtocol(Protocol.Zigbee)">
+                <span class="tab-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M2 20h.01M7 20v-4M12 20v-8M17 20V8M22 4v16"/>
+                    </svg>
+                </span>
+                ZigBee (@ProtocolCountOf(Protocol.Zigbee).ToString("N0"))
+            </button>
+            <button class="protocol-tab lora @(_selectedProtocol == Protocol.Lora ? "active" : "")" @onclick="() => FilterByProtocol(Protocol.Lora)">
+                LoRa (@ProtocolCountOf(Protocol.Lora).ToString("N0"))
+            </button>
+            <button class="protocol-tab bluetooth @(_selectedProtocol == Protocol.Bluetooth ? "active" : "")" @onclick="() => FilterByProtocol(Protocol.Bluetooth)">
+                Bluetooth (@ProtocolCountOf(Protocol.Bluetooth).ToString("N0"))
+            </button>
+            <button class="protocol-tab wifi @(_selectedProtocol == Protocol.Wifi ? "active" : "")" @onclick="() => FilterByProtocol(Protocol.Wifi)">
+                WiFi (@ProtocolCountOf(Protocol.Wifi).ToString("N0"))
+            </button>
+            <button class="protocol-tab universal @(_selectedProtocol == Protocol.Unknown ? "active" : "")" @onclick="() => FilterByProtocol(Protocol.Unknown)">
+                Universal (@ProtocolCountOf(Protocol.Unknown).ToString("N0"))
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Devices Grid -->
+<div class="row g-4">
+    @if (_devices.Any())
+    {
+        @foreach (var device in _devices)
+        {
+            <div class="col-md-6 col-lg-4">
+                <div class="card device-card border-0 shadow-sm h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div class="device-icon @GetProtocolClass(device.Protocol)">
+                                @GetProtocolIcon(device.Protocol)
+                            </div>
+                            <span class="badge @GetStatusBadgeClass(device.Status)">@device.Status</span>
+                        </div>
+                        <h5 class="card-title mb-1">@device.Name</h5>
+                        <p class="text-muted small mb-3">
+                            @(device.Manufacturer ?? "Unknown") @(device.Model != null ? $"- {device.Model}" : "")
+                        </p>
+                        <div class="device-meta mb-3">
+                            <div class="meta-item">
+                                <span class="meta-label">Protocol</span>
+                                <span class="badge @GetProtocolBadgeClass(device.Protocol)">@device.Protocol.ToDisplayName()</span>
+                            </div>
+                            <div class="meta-item">
+                                <span class="meta-label">Last Seen</span>
+                                <span class="meta-value">@GetRelativeTime(device.LastSeen)</span>
+                            </div>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-primary flex-grow-1" @onclick="() => ShowDeviceDetails(device)">
+                                View Details
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveDevice(device.Id)" title="Remove device">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                    <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+                                    <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    }
+    else
+    {
+        <div class="col-12">
+            <div class="card border-0 shadow-sm">
+                <div class="card-body text-center py-5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="currentColor" class="text-muted mb-3" viewBox="0 0 16 16">
+                        <path d="M6 1a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3V4a3 3 0 0 0-3-3H6zM5 4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4z"/>
+                    </svg>
+                    <h5 class="text-muted">No devices found</h5>
+                    <p class="text-muted mb-0">Devices will appear here when they connect via MQTT</p>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+<!-- Device Details Modal -->
+@if (_selectedDevice != null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background: var(--hermod-overlay); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg">
+                <div class="modal-header border-0 hermod-gradient-4">
+                    <h5 class="modal-title text-white">
+                        <span class="me-2">@GetProtocolIcon(_selectedDevice.Protocol)</span>
+                        @_selectedDevice.Name
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" @onclick="CloseDetails"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-4">
+                        <div class="col-md-6">
+                            <h6 class="text-muted mb-3">Device Information</h6>
+                            <div class="info-list">
+                                <div class="info-item">
+                                    <span class="info-label">Device ID</span>
+                                    <code class="info-value">@_selectedDevice.Id</code>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Protocol</span>
+                                    <span class="badge @GetProtocolBadgeClass(_selectedDevice.Protocol)">@_selectedDevice.Protocol.ToDisplayName()</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Status</span>
+                                    <span class="badge @GetStatusBadgeClass(_selectedDevice.Status)">@_selectedDevice.Status</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Topic Base</span>
+                                    <code class="info-value">@_selectedDevice.TopicBase</code>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Firmware</span>
+                                    <span class="info-value">@(_selectedDevice.FirmwareVersion ?? "Unknown")</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="text-muted mb-3">Current State</h6>
+                            <pre class="bg-light p-3 rounded small mb-0" style="max-height: 200px; overflow: auto;">@FormatJson(_selectedDevice.State)</pre>
+                        </div>
+                        <div class="col-12">
+                            <h6 class="text-muted mb-3">Capabilities</h6>
+                            <pre class="bg-light p-3 rounded small mb-0" style="max-height: 150px; overflow: auto;">@FormatJson(_selectedDevice.Capabilities)</pre>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-0 flex-wrap gap-2">
+                    @if (_renaming)
+                    {
+                        <div class="d-flex flex-grow-1 gap-2 align-items-center">
+                            <input type="text"
+                                   class="form-control form-control-sm"
+                                   placeholder="new friendly name"
+                                   @bind="_renameInput"
+                                   @bind:event="oninput"
+                                   @onkeydown="OnRenameKeyDown" />
+                            <button class="btn btn-sm btn-success" @onclick="SubmitRenameAsync" disabled="@string.IsNullOrWhiteSpace(_renameInput)">Save</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="CancelRename">Cancel</button>
+                        </div>
+                        @if (!string.IsNullOrEmpty(_renameError))
+                        {
+                            <div class="text-danger small w-100">@_renameError</div>
+                        }
+                    }
+                    else
+                    {
+                        <button type="button" class="btn btn-outline-warning" @onclick="StartRename">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+                            </svg>
+                            Rename@(_selectedDevice!.Protocol == Protocol.Zigbee ? " (via Z2M)" : "")
+                        </button>
+                        <button type="button" class="btn btn-outline-primary" @onclick="() => ShowInTopology(_selectedDevice!.Id)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-12a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5z"/>
+                                <path d="M8 7a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm-4 4a1 1 0 1 0 0-2 1 1 0 0 0 0 2zm8 0a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/>
+                            </svg>
+                            View in Topology
+                        </button>
+                        <button type="button" class="btn btn-secondary ms-auto" @onclick="CloseDetails">Close</button>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .protocol-tabs {
+        display: flex;
+        overflow-x: auto;
+        gap: 0;
+    }
+
+    .protocol-tab {
+        padding: 1rem 1.5rem;
+        border: none;
+        background: none;
+        color: var(--hermod-text-muted);
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+        border-bottom: 3px solid transparent;
+    }
+
+    .protocol-tab:hover {
+        color: var(--hermod-text);
+        background: rgba(var(--hermod-primary-rgb), 0.05);
+    }
+
+    .protocol-tab.active {
+        color: var(--hermod-primary);
+        border-bottom-color: var(--hermod-primary);
+    }
+
+    .device-card {
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .device-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12) !important;
+    }
+
+    .device-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+    }
+
+    .device-icon.zigbee { background: linear-gradient(135deg, var(--hermod-zigbee) 0%, var(--hermod-zigbee-dim) 100%); }
+    .device-icon.lora { background: linear-gradient(135deg, var(--hermod-lora) 0%, var(--hermod-lora-dim) 100%); }
+    .device-icon.bluetooth { background: linear-gradient(135deg, var(--hermod-bluetooth) 0%, var(--hermod-bluetooth-dim) 100%); }
+    .device-icon.wifi { background: linear-gradient(135deg, var(--hermod-wifi) 0%, var(--hermod-wifi-dim) 100%); }
+    .device-icon.unknown { background: linear-gradient(135deg, #6c757d 0%, #495057 100%); }
+
+    .device-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .meta-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .meta-label {
+        font-size: 0.75rem;
+        color: var(--hermod-text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .meta-value {
+        font-size: 0.875rem;
+        color: var(--hermod-text);
+    }
+
+    .info-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .info-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--hermod-border);
+    }
+
+    .info-label {
+        font-size: 0.875rem;
+        color: var(--hermod-text-muted);
+    }
+
+    .info-value {
+        font-size: 0.875rem;
+        color: var(--hermod-text);
+    }
+</style>
+
+@code {
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(10);
+    private static readonly System.Text.RegularExpressions.Regex FriendlyNameRegex =
+        new(@"^[A-Za-z0-9_\-/. ]{1,64}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private List<Device> _allDevices = new();
+    private List<Device> _devices = new();
+    private Protocol? _selectedProtocol;
+    private DeviceCounts? _counts;
+    private DevicePage? _page;
+    private int _pageOffset;
+    private int _pageSize = 100;
+    private string _searchQuery = string.Empty;
+
+    private int TotalCount => _selectedProtocol.HasValue
+        ? (_counts?.ByProtocol.TryGetValue(_selectedProtocol.Value, out var pc) == true ? pc : 0)
+        : (_counts?.Total ?? 0);
+    private int OnlineCount => _counts?.Online ?? 0;
+    private int OfflineCount => Math.Max(0, (_counts?.Total ?? 0) - (_counts?.Online ?? 0));
+    private int ProtocolCount => _counts?.ByProtocol.Count ?? 0;
+    private int ProtocolCountOf(Protocol p) =>
+        _counts?.ByProtocol.TryGetValue(p, out var c) == true ? c : 0;
+
+    private bool CanPrev => _pageOffset > 0;
+    private bool CanNext => _page is not null && _pageOffset + _page.Items.Count < _page.Total;
+    private string PageDescription
+    {
+        get
+        {
+            if (_page is null || _page.Total == 0) return "0 of 0";
+            var from = _pageOffset + 1;
+            var to = Math.Min(_pageOffset + _page.Items.Count, _page.Total);
+            return $"{from:N0}–{to:N0} of {_page.Total:N0}";
+        }
+    }
+    private Device? _selectedDevice;
+    private Timer? _refreshTimer;
+    private string? _errorMessage;
+
+    private bool _renaming;
+    private string _renameInput = string.Empty;
+    private string? _renameError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDevices();
+        _refreshTimer = new Timer(
+            _ => _ = InvokeAsync(LoadDevices),
+            state: null,
+            dueTime: RefreshInterval,
+            period: RefreshInterval);
+    }
+
+    private Task LoadDevicesClicked() => LoadDevices();
+
+    private async Task LoadDevices()
+    {
+        try
+        {
+            // Two server-side round-trips: counts (for stats cards and tab
+            // labels, returns aggregate ints not rows) and the current
+            // page (bounded by _pageSize). Pulling the full registry
+            // unpaginated OOMKills the pod on a 220k-device deployment.
+            _counts = await DeviceService.GetCountsAsync(_pageCts.Token);
+
+            var q = string.IsNullOrWhiteSpace(_searchQuery) ? null : _searchQuery.Trim();
+            _page = await DeviceService.GetDevicesPageAsync(_pageOffset, _pageSize, q, _selectedProtocol, _pageCts.Token);
+
+            // Protocol filter is now server-side (applied inside
+            // GetDevicesPageAsync above); _devices == _allDevices.
+            _allDevices = _page.Items.ToList();
+            _devices = _allDevices;
+            _errorMessage = null;
+            StateHasChanged();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load devices");
+            _errorMessage = "Failed to load devices. Retry or check coordinator logs.";
+            StateHasChanged();
+        }
+    }
+
+    private async Task FilterByProtocol(Protocol? protocol)
+    {
+        _selectedProtocol = protocol;
+        _pageOffset = 0;
+        await LoadDevices();
+    }
+
+    private async Task PrevPage()
+    {
+        if (!CanPrev) return;
+        _pageOffset = Math.Max(0, _pageOffset - _pageSize);
+        await LoadDevices();
+    }
+
+    private async Task NextPage()
+    {
+        if (!CanNext) return;
+        _pageOffset += _pageSize;
+        await LoadDevices();
+    }
+
+    private async Task OnSearchChanged(string? value)
+    {
+        _searchQuery = value ?? string.Empty;
+        _pageOffset = 0;
+        await LoadDevices();
+    }
+
+    private async Task OnPageSizeChanged(string? value)
+    {
+        if (int.TryParse(value, out var n) && n is 50 or 100 or 250 or 500)
+        {
+            _pageSize = n;
+            _pageOffset = 0;
+            await LoadDevices();
+        }
+    }
+
+    private void ShowDeviceDetails(Device device)
+    {
+        _selectedDevice = device;
+        _renaming = false;
+        _renameInput = string.Empty;
+        _renameError = null;
+    }
+
+    private void CloseDetails()
+    {
+        _selectedDevice = null;
+        _renaming = false;
+    }
+
+    private void ShowInTopology(string deviceId)
+    {
+        _selectedDevice = null;
+        Nav.NavigateTo($"/topology?focus={Uri.EscapeDataString(deviceId)}");
+    }
+
+    private void StartRename()
+    {
+        if (_selectedDevice is null) return;
+        _renaming = true;
+        _renameInput = _selectedDevice.Id;
+        _renameError = null;
+    }
+
+    private void CancelRename()
+    {
+        _renaming = false;
+        _renameInput = string.Empty;
+        _renameError = null;
+    }
+
+    private async Task OnRenameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await SubmitRenameAsync();
+        else if (e.Key == "Escape") CancelRename();
+    }
+
+    private async Task SubmitRenameAsync()
+    {
+        if (_selectedDevice is null) return;
+        _renameError = null;
+
+        var newName = _renameInput?.Trim() ?? string.Empty;
+        if (!FriendlyNameRegex.IsMatch(newName))
+        {
+            _renameError = "Use letters, digits, spaces, '_', '-', '.', '/' (1–64 chars).";
+            return;
+        }
+        if (string.Equals(newName, _selectedDevice.Id, StringComparison.Ordinal))
+        {
+            _renaming = false;
+            return;
+        }
+
+        var oldId = _selectedDevice.Id;
+        try
+        {
+            // For Zigbee, route through Z2M's rename API first so the upstream
+            // bridge stays in lockstep. For other protocols just touch the
+            // coordinator row.
+            if (_selectedDevice.Protocol == Protocol.Zigbee)
+            {
+                var z2mOk = await ZigbeeService.RenameDeviceAsync(oldId, newName, homeAssistantRename: false, _pageCts.Token);
+                if (!z2mOk)
+                {
+                    _renameError = "Zigbee2MQTT refused the rename. The new name may be in use.";
+                    return;
+                }
+            }
+
+            var renamed = await DeviceService.RenameDeviceAsync(oldId, newName, _pageCts.Token);
+            if (!renamed)
+            {
+                _renameError = $"Could not rename — '{newName}' is already taken.";
+                return;
+            }
+
+            _renaming = false;
+            await LoadDevices();
+            _selectedDevice = _allDevices.FirstOrDefault(d => d.Id == newName) ?? _selectedDevice;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Rename failed for device {DeviceId} -> {NewName}", oldId, newName);
+            _renameError = "Rename failed (see coordinator logs).";
+        }
+    }
+
+    private async Task RemoveDevice(string id)
+    {
+        try
+        {
+            await DeviceService.RemoveDeviceAsync(id, _pageCts.Token);
+            await LoadDevices();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to remove device {DeviceId}", id);
+            _errorMessage = $"Failed to remove device {id}. Retry.";
+        }
+    }
+
+    private string GetStatusBadgeClass(DeviceStatus status) => status switch
+    {
+        DeviceStatus.Online => "bg-success",
+        DeviceStatus.Offline => "bg-danger",
+        DeviceStatus.Pairing => "bg-warning text-dark",
+        DeviceStatus.Error => "bg-danger",
+        _ => "bg-secondary"
+    };
+
+    private string GetProtocolBadgeClass(Protocol protocol) => protocol switch
+    {
+        Protocol.Zigbee => "bg-success",
+        Protocol.Lora => "bg-warning text-dark",
+        Protocol.Bluetooth => "bg-info",
+        Protocol.Wifi => "bg-primary",
+        _ => "bg-secondary"
+    };
+
+    private string GetProtocolClass(Protocol protocol) => protocol.ToString().ToLower();
+
+    private MarkupString GetProtocolIcon(Protocol protocol) => protocol switch
+    {
+        Protocol.Zigbee => new MarkupString("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' fill='currentColor' viewBox='0 0 16 16'><path d='M2 2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H2zm6.5 1a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1 0-1H8V3.5a.5.5 0 0 1 .5-.5z'/></svg>"),
+        Protocol.Lora => new MarkupString("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' fill='currentColor' viewBox='0 0 16 16'><path d='M0 11.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-2zm4-3a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-5zm4-3a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-8zm4-3a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-11z'/></svg>"),
+        Protocol.Bluetooth => new MarkupString("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' fill='currentColor' viewBox='0 0 16 16'><path fill-rule='evenodd' d='m8.543.695 4.678 3.742a.5.5 0 0 1 0 .782l-3.678 2.78 3.678 2.782a.5.5 0 0 1 0 .782l-4.678 3.742a.5.5 0 0 1-.822-.383V10.5l-3.036 2.442a.5.5 0 0 1-.628-.782L7.564 9.5.721 6.84a.5.5 0 0 1 .628-.782L7.564 8.5V4.5L4.057 7.06a.5.5 0 0 1-.628-.782L8.221.312a.5.5 0 0 1 .322-.117z'/></svg>"),
+        Protocol.Wifi => new MarkupString("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' fill='currentColor' viewBox='0 0 16 16'><path d='M15.384 6.115a.485.485 0 0 0-.047-.736A12.444 12.444 0 0 0 8 3C5.259 3 2.723 3.882.663 5.379a.485.485 0 0 0-.048.736.518.518 0 0 0 .668.05A11.448 11.448 0 0 1 8 4c2.507 0 4.827.802 6.716 2.164.205.148.49.13.668-.049z'/><path d='M13.229 8.271a.482.482 0 0 0-.063-.745A9.455 9.455 0 0 0 8 6c-1.905 0-3.68.56-5.166 1.526a.48.48 0 0 0-.063.745.525.525 0 0 0 .652.065A8.46 8.46 0 0 1 8 7a8.46 8.46 0 0 1 4.576 1.336c.206.132.48.108.653-.065zm-2.183 2.183c.226-.226.185-.605-.1-.75A6.473 6.473 0 0 0 8 9c-1.06 0-2.062.254-2.946.704-.285.145-.326.524-.1.75l.015.015c.16.16.407.19.611.09A5.478 5.478 0 0 1 8 10c.868 0 1.69.201 2.42.56.203.1.45.07.61-.091l.016-.015zM9.06 12.44c.196-.196.198-.52-.04-.66A1.99 1.99 0 0 0 8 11.5a1.99 1.99 0 0 0-1.02.28c-.238.14-.236.464-.04.66l.706.706a.5.5 0 0 0 .707 0l.707-.707z'/></svg>"),
+        // Universal icon - globe/world representing cross-protocol bridged devices
+        _ => new MarkupString("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' fill='currentColor' viewBox='0 0 16 16'><path d='M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5zM5.145 12c.138.386.295.744.468 1.068.552 1.035 1.218 1.65 1.887 1.855V12H5.145zm.182 2.472a6.696 6.696 0 0 1-.597-.933A9.268 9.268 0 0 1 4.09 12H2.255a7.024 7.024 0 0 0 3.072 2.472zM3.82 11a13.652 13.652 0 0 1-.312-2.5h-2.49c.062.89.291 1.733.656 2.5H3.82zm6.853 3.472A7.024 7.024 0 0 0 13.745 12H11.91a9.27 9.27 0 0 1-.64 1.539 6.688 6.688 0 0 1-.597.933zM8.5 12v2.923c.67-.204 1.335-.82 1.887-1.855.173-.324.33-.682.468-1.068H8.5zm3.68-1h2.146c.365-.767.594-1.61.656-2.5h-2.49a13.65 13.65 0 0 1-.312 2.5zm2.802-3.5a6.959 6.959 0 0 0-.656-2.5H12.18c.174.782.282 1.623.312 2.5h2.49zM11.27 2.461c.247.464.462.98.64 1.539h1.835a7.024 7.024 0 0 0-3.072-2.472c.218.284.418.598.597.933zM10.855 4a7.966 7.966 0 0 0-.468-1.068C9.835 1.897 9.17 1.282 8.5 1.077V4h2.355z'/></svg>")
+    };
+
+    private string GetRelativeTime(DateTime dateTime)
+    {
+        var diff = DateTime.UtcNow - dateTime;
+        if (diff.TotalSeconds < 60) return "Just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+
+    private string FormatJson(object? obj)
+    {
+        if (obj == null) return "{}";
+        return System.Text.Json.JsonSerializer.Serialize(obj, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+}

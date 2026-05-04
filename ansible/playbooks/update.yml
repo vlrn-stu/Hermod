@@ -1,0 +1,142 @@
+---
+# update.yml - Pull latest code and manifests from git, then redeploy.
+#
+# Usage:
+#   Dry run:  ansible-playbook -i inventory/hosts.yml playbooks/update.yml --check
+#   Full run: ansible-playbook -i inventory/hosts.yml playbooks/update.yml
+#
+# Rollback: if health checks fail after redeployment, kubectl rollout undo is
+# attempted for each Deployment that can be rolled back.
+
+- name: Update Hermod stack to latest version
+  hosts: hermod_nodes
+  gather_facts: true
+
+  pre_tasks:
+    - name: update | Announce start
+      ansible.builtin.debug:
+        msg: "Starting Hermod update on {{ inventory_hostname }}"
+      tags: [always]
+
+    # Snapshot current deployment revisions for rollback reference
+    - name: update | Record current deployment revisions (for rollback reference)
+      ansible.builtin.command:
+        cmd: >
+          microk8s kubectl rollout history deployment/{{ item }}
+          -n {{ hermod_namespace }}
+      loop: "{{ hermod_rollback_deployments }}"
+      register: _pre_revisions
+      changed_when: false
+      failed_when: false
+      tags: [update, pre]
+
+  tasks:
+    - name: update | Pull latest changes from git remote
+      ansible.builtin.git:
+        repo: "{{ hermod_git_remote }}"
+        dest: "{{ hermod_install_path }}"
+        version: "{{ hermod_git_branch }}"
+        force: false
+        update: true
+      become: true
+      become_user: "{{ hermod_user }}"
+      register: _git_pull
+      tags: [update, git]
+
+    - name: update | Show git pull result
+      ansible.builtin.debug:
+        msg: "Git: {{ _git_pull.after | default('no change') }} (was {{ _git_pull.before | default('unknown') }})"
+      tags: [update, git]
+
+    # Ensure Secrets exist before kubectl apply -k. base/secrets.yaml
+    # and vault42/secrets.yaml are excluded from the kustomization;
+    # credential material is populated imperatively via
+    # lib/ensure-secrets.sh. HERMOD_SECRETS_MODE=keep never touches
+    # existing values — it only fills in Secrets that are missing
+    # (e.g. a new key introduced by the git pull above). Without this,
+    # hermod-coordinator hits CreateContainerConfigError on the
+    # missing secretKeyRef key after an upgrade.
+    - name: update | Ensure cluster Secrets via ensure-secrets.sh (keep mode)
+      ansible.builtin.shell:
+        # Force bash — pipefail is bash-only and Ubuntu's /bin/sh is dash.
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          KUBECTL='microk8s kubectl' \
+          HERMOD_SECRETS_MODE=keep \
+          bash -c "source '{{ hermod_install_path }}/Hermod/lib/ensure-secrets.sh' && ensure_secrets"
+      register: _ensure_secrets
+      changed_when: "'applying Secrets' in _ensure_secrets.stderr"
+      tags: [update, secrets]
+
+    - name: update | Apply updated manifests via kustomize
+      ansible.builtin.command:
+        cmd: >
+          microk8s kubectl apply -k
+          {{ hermod_install_path }}/Hermod/kubernetes/{{ hermod_kustomize_overlay }}
+      register: _kubectl_apply
+      changed_when: "'configured' in _kubectl_apply.stdout or 'created' in _kubectl_apply.stdout"
+      tags: [update, kubectl]
+
+    - name: update | Wait for all pods to reach Running state
+      ansible.builtin.command:
+        cmd: >
+          microk8s kubectl wait pod
+          --all
+          --for=condition=ready
+          -n {{ hermod_namespace }}
+          --timeout={{ hermod_pod_wait_timeout }}s
+      register: _pod_wait
+      changed_when: false
+      failed_when: false
+      tags: [update, wait]
+
+    # ---------------------------------------------------------------------------
+    # Rollback block: triggered when pod wait failed
+    # ---------------------------------------------------------------------------
+    - name: update | Rollback deployments if pods did not become ready
+      when: _pod_wait.rc != 0
+      block:
+        - name: update | rollback | Undo last rollout for each deployment
+          ansible.builtin.command:
+            cmd: "microk8s kubectl rollout undo deployment/{{ item }} -n {{ hermod_namespace }}"
+          loop: "{{ hermod_rollback_deployments }}"
+          register: _rollback
+          changed_when: true
+          failed_when: false
+
+        - name: update | rollback | Wait for rollback to stabilise
+          ansible.builtin.command:
+            cmd: >
+              microk8s kubectl wait pod
+              --all
+              --for=condition=ready
+              -n {{ hermod_namespace }}
+              --timeout={{ hermod_pod_wait_timeout }}s
+          changed_when: false
+          failed_when: false
+
+        - name: update | rollback | Fail with clear message
+          ansible.builtin.fail:
+            msg: >
+              Pods did not reach Running state after update. A rollback has been
+              attempted. Check pod status with:
+                microk8s kubectl get pods -n {{ hermod_namespace }}
+              and logs with:
+                microk8s kubectl logs -f deployment/hermod-coordinator -n {{ hermod_namespace }}
+
+    # Healthcheck runs at the END of the update play, after git pull
+    # and kubectl apply have completed. A play-level `roles:` key
+    # runs BEFORE `tasks:`, so it would validate the OLD deployment.
+    # include_role inside tasks enforces the correct order without
+    # losing the role's own tags.
+    - name: update | Validate post-update health
+      ansible.builtin.include_role:
+        name: healthcheck
+      tags: [healthcheck]
+
+  post_tasks:
+    - name: update | Update complete
+      ansible.builtin.debug:
+        msg: "Hermod update completed successfully on {{ inventory_hostname }}."
+      tags: [always]

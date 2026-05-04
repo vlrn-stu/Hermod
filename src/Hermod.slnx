@@ -1,0 +1,13 @@
+<Solution>
+  <Project Path="Hermod.Coordinator/Hermod.Coordinator.csproj" />
+  <Project Path="Hermod.Core/Hermod.Core.csproj" />
+  <Project Path="Hermod.Infrastructure/Hermod.Infrastructure.csproj" />
+  <Project Path="Hermod.Rules/Hermod.Rules.csproj" />
+  <Project Path="../tests/Hermod.TestInfrastructure/Hermod.TestInfrastructure.csproj" />
+  <Project Path="../tests/Hermod.UnitTests/Hermod.UnitTests.csproj" />
+  <Project Path="../tests/Hermod.Coordinator.UnitTests/Hermod.Coordinator.UnitTests.csproj" />
+  <Project Path="../tests/Hermod.Frontend.Tests/Hermod.Frontend.Tests.csproj" />
+  <Project Path="../tests/Hermod.LoRa2MQTT.UnitTests/Hermod.LoRa2MQTT.UnitTests.csproj" />
+  <Project Path="../tests/Hermod.LoRa2MQTT.IntegrationTests/Hermod.LoRa2MQTT.IntegrationTests.csproj" />
+  <!-- Hermod.Frontend.BrowserTests intentionally excluded — Playwright suite is incomplete; lives at dev/tests/Hermod.Frontend.BrowserTests/ -->
+</Solution>

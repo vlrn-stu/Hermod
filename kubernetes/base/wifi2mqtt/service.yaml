@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wifi2mqtt
+  namespace: hermod
+  labels:
+    app: wifi2mqtt
+    component: protocol-translator
+spec:
+  # Only external MQTT entry point — nanomq itself is ClusterIP. 32183
+  # reuses the historical nodePort so device firmware hardcoded to
+  # kind-host:32183 keeps working (now hits the wifi bridge, not nanomq).
+  type: NodePort
+  ports:
+    - name: mqtt
+      port: 1883
+      targetPort: 1883
+      nodePort: 32183
+      protocol: TCP
+  selector:
+    app: wifi2mqtt

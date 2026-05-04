@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wifi2mqtt
+  namespace: hermod
+  labels:
+    app: wifi2mqtt
+    component: protocol-translator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wifi2mqtt
+  template:
+    metadata:
+      labels:
+        app: wifi2mqtt
+        component: protocol-translator
+    spec:
+      initContainers:
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for upstream nanomq..."
+              until nc -z nanomq.hermod.svc.cluster.local 1883; do
+                echo "nanomq not ready, sleeping..."
+                sleep 2
+              done
+              echo "nanomq is ready!"
+        # mosquitto 2.x has no env interpolation, so render bridge
+        # credentials into the config via sed at boot.
+        - name: render-config
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sed \
+                -e "s|__BRIDGE_USER__|${BRIDGE_USER}|g" \
+                -e "s|__BRIDGE_PASSWORD__|${BRIDGE_PASSWORD}|g" \
+                /tmpl/mosquitto.conf.tmpl > /rendered/mosquitto.conf
+              echo "mosquitto.conf rendered ($(wc -c </rendered/mosquitto.conf) bytes)"
+          env:
+            # Bridge user must match the ACL rule
+            #   { permit = "allow", action = "publish",
+            #     username = "wifi2mqtt-bridge", topics = ["wifi/#"] }
+            # The legacy hermod-secrets:mqtt-username is `hermod-service`
+            # whose ACL only grants wifi/+/set, so every Wi-Fi telemetry
+            # publish was silently denied by the broker.
+            - name: BRIDGE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: wifi2mqtt-bridge-username
+            - name: BRIDGE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: wifi2mqtt-bridge-password
+          volumeMounts:
+            - name: wifi2mqtt-config-template
+              mountPath: /tmpl
+              readOnly: true
+            - name: wifi2mqtt-config-rendered
+              mountPath: /rendered
+      containers:
+        - name: mosquitto
+          image: eclipse-mosquitto:2.0.18
+          ports:
+            - name: mqtt
+              containerPort: 1883
+              protocol: TCP
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "20m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+          volumeMounts:
+            # Mount the rendered config (with credentials substituted),
+            # NOT the ConfigMap template.
+            - name: wifi2mqtt-config-rendered
+              mountPath: /mosquitto/config/mosquitto.conf
+              subPath: mosquitto.conf
+              readOnly: true
+          livenessProbe:
+            tcpSocket:
+              port: 1883
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 1883
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: wifi2mqtt-config-template
+          configMap:
+            name: wifi2mqtt-config
+        - name: wifi2mqtt-config-rendered
+          emptyDir: {}

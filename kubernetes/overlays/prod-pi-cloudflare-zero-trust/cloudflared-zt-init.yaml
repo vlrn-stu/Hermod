@@ -1,0 +1,41 @@
+# Adds a fail-closed init container to the cloudflared Deployment.
+# The pod refuses to start if zero-trust-marker.yaml has not been
+# edited away from its placeholder values.
+#
+# This is the structural enforcement of "Zero Trust mode must be
+# explicitly set" — you cannot accidentally apply this overlay and
+# end up with an unauthenticated public tunnel.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: zero-trust-config-check
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              if [ "${CF_ACCESS_AUD}" = "REPLACE_WITH_CF_ACCESS_APP_AUD" ] || [ -z "${CF_ACCESS_AUD:-}" ]; then
+                echo "ERROR: CF_ACCESS_AUD is unset or still the placeholder."
+                echo "Zero Trust overlay refuses to start without a configured Cloudflare Access Application."
+                echo "Edit kubernetes/overlays/prod-pi-cloudflare-zero-trust/zero-trust-marker.yaml"
+                exit 1
+              fi
+              if [ "${CF_ACCESS_TEAM_DOMAIN}" = "REPLACE_WITH_TEAM_DOMAIN" ] || [ -z "${CF_ACCESS_TEAM_DOMAIN:-}" ]; then
+                echo "ERROR: CF_ACCESS_TEAM_DOMAIN is unset or still the placeholder."
+                exit 1
+              fi
+              echo "Zero Trust config check passed: AUD=${CF_ACCESS_AUD}, team=${CF_ACCESS_TEAM_DOMAIN}"
+          envFrom:
+            - configMapRef:
+                name: cloudflare-zero-trust-config
+      containers:
+        - name: cloudflared
+          envFrom:
+            - configMapRef:
+                name: cloudflare-zero-trust-config

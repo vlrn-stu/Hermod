@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hermod
+  labels:
+    app.kubernetes.io/name: hermod
+    app.kubernetes.io/part-of: hermod-iot-translator

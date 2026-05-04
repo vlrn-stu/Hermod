@@ -1,0 +1,703 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["Hermod.Coordinator.styles.css"]" />
+    <ImportMap />
+    <link rel="icon" type="image/x-icon" href="favicon.ico" />
+    <link rel="icon" type="image/png" sizes="256x256" href="favicon.png" />
+    <link rel="apple-touch-icon" href="favicon.png" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+    <script>
+        // Apply theme immediately to prevent flash and persist across navigation
+        (function() {
+            function applyStoredTheme() {
+                var theme = localStorage.getItem('hermod_theme');
+                if (theme === 'light') {
+                    document.documentElement.classList.add('light-theme');
+                } else {
+                    document.documentElement.classList.remove('light-theme');
+                }
+            }
+            applyStoredTheme();
+            // Re-apply on Blazor enhanced navigation
+            document.addEventListener('blazor:navigate', applyStoredTheme);
+            // Also watch for any accidental class removal
+            var observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+                        var theme = localStorage.getItem('hermod_theme');
+                        var hasLightClass = document.documentElement.classList.contains('light-theme');
+                        if (theme === 'light' && !hasLightClass) {
+                            document.documentElement.classList.add('light-theme');
+                        } else if (theme !== 'light' && hasLightClass) {
+                            document.documentElement.classList.remove('light-theme');
+                        }
+                    }
+                });
+            });
+            observer.observe(document.documentElement, { attributes: true });
+        })();
+    </script>
+    <HeadOutlet />
+</head>
+
+<body>
+    <CascadingAuthenticationState>
+        <Routes />
+    </CascadingAuthenticationState>
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <!-- hermodAuth.postJson: browser-side fetch so Set-Cookie attaches to
+         the user's browser, not the SSR HttpClient. See wwwroot/auth.js. -->
+    <script src="auth.js"></script>
+    <script>
+        function downloadFile(fileName, base64Content) {
+            const link = document.createElement('a');
+            link.href = 'data:application/octet-stream;base64,' + base64Content;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // Theme switcher - updates class and localStorage
+        function setHermodTheme(isLight) {
+            localStorage.setItem('hermod_theme', isLight ? 'light' : 'dark');
+            if (isLight) {
+                document.documentElement.classList.add('light-theme');
+            } else {
+                document.documentElement.classList.remove('light-theme');
+            }
+        }
+
+        // Redact mode — pure FE blur on device names, ids, topics, payloads.
+        function setHermodRedact(on) {
+            localStorage.setItem('hermod_redact', on ? '1' : '0');
+            document.body.classList.toggle('redact-mode', !!on);
+            // Cytoscape paints labels into <canvas>, so the CSS blur in
+            // app.css does not reach them. Force a style update so the
+            // label mapper functions re-read the body class and emit the
+            // censored form below.
+            if (typeof topologyCy !== 'undefined' && topologyCy) {
+                topologyCy.style().update();
+            }
+        }
+
+        // Replace every non-whitespace, non-underscore character with a
+        // bullet so the label still wraps the same way (so node sizing
+        // doesn't jump when redact toggles), but no characters survive.
+        function redactLabel(text) {
+            if (!text) return text;
+            if (!document.body.classList.contains('redact-mode')) return text;
+            return String(text).replace(/[^\s_]/g, '•');
+        }
+
+        // Topology visualization with Cytoscape.js
+        let topologyCy = null;
+        let topologyTooltip = null;
+        // .NET back-channel for the side-panel: Topology.razor passes a
+        // DotNetObjectReference here on first interactive render, and the
+        // tap handler below calls OnTopologyNodeSelected on it whenever
+        // selection changes (or the hub is tapped to clear).
+        let topologyDotNetRef = null;
+        window.setTopologyDotNetRef = function(ref) {
+            topologyDotNetRef = ref;
+        };
+
+        // Fixed protocol colors - matching CSS variables
+        const protocolColors = {
+            'hub': '#00FF41',
+            'zigbee': '#22C55E',
+            'bluetooth': '#0EA5E9',
+            'lora': '#F97316',
+            'wifi': '#A855F7',
+            'unknown': '#64748B'
+        };
+
+        // Get protocol color (fixed mapping)
+        function getProtocolColor(protocol) {
+            return protocolColors[protocol] || protocolColors['unknown'];
+        }
+
+        function createTooltip() {
+            if (document.getElementById('topology-tooltip')) {
+                topologyTooltip = document.getElementById('topology-tooltip');
+                return;
+            }
+            topologyTooltip = document.createElement('div');
+            topologyTooltip.id = 'topology-tooltip';
+            // Use CSS variables for theme-aware tooltip
+            const style = getComputedStyle(document.documentElement);
+            const bgColor = style.getPropertyValue('--hermod-card-bg').trim() || '#1a1a1a';
+            const textColor = style.getPropertyValue('--hermod-text').trim() || '#e0e0e0';
+            const borderColor = style.getPropertyValue('--hermod-border').trim() || '#333';
+            topologyTooltip.style.cssText = `
+                position: fixed;
+                background: ${bgColor};
+                border: 1px solid ${borderColor};
+                border-radius: 8px;
+                padding: 12px 16px;
+                color: ${textColor};
+                font-size: 12px;
+                pointer-events: none;
+                z-index: 10000;
+                display: none;
+                max-width: 280px;
+                box-shadow: var(--hermod-shadow);
+                backdrop-filter: blur(4px);
+            `;
+            document.body.appendChild(topologyTooltip);
+        }
+
+        function showTooltip(element, event) {
+            createTooltip();
+            const data = element.data();
+            const style = getComputedStyle(document.documentElement);
+            const primaryColor = style.getPropertyValue('--hermod-primary').trim() || '#22c55e';
+            const mutedColor = style.getPropertyValue('--hermod-text-muted').trim() || '#888';
+            const dimColor = style.getPropertyValue('--hermod-text-dim').trim() || '#666';
+            const warningColor = '#f59e0b';
+
+            let html = '';
+            if (data.type === 'hub') {
+                html = `<div style="font-weight:bold;font-size:14px;margin-bottom:8px;color:${primaryColor};">HERMOD Hub</div>
+                        <div style="color:${mutedColor};">Central message broker</div>
+                        <div style="color:${dimColor};font-size:10px;margin-top:8px;">Click to view system status</div>`;
+            } else if (data.type === 'device') {
+                const statusColor = data.status === 'online' ? primaryColor : '#6b7280';
+                const statusDot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};margin-right:6px;"></span>`;
+                html = `<div style="font-weight:bold;font-size:14px;margin-bottom:8px;">${data.fullName || data.label}</div>
+                        <div style="display:flex;align-items:center;margin-bottom:6px;">
+                            <span style="color:${mutedColor};width:70px;">Protocol:</span>
+                            <span style="color:${protocolColors[data.protocol] || primaryColor};font-weight:500;">${data.protocolDisplay || data.protocol || 'Universal'}</span>
+                        </div>
+                        <div style="display:flex;align-items:center;margin-bottom:6px;">
+                            <span style="color:${mutedColor};width:70px;">Status:</span>
+                            ${statusDot}<span style="color:${statusColor};font-weight:500;">${(data.status || 'unknown').toUpperCase()}</span>
+                        </div>
+                        ${data.deviceId ? `<div style="color:${dimColor};font-size:10px;margin-top:8px;font-family:monospace;">ID: ${data.deviceId}</div>` : ''}`;
+            } else if (data.type === 'rule') {
+                // Rule edge tooltip
+                html = `<div style="font-weight:bold;font-size:14px;margin-bottom:8px;color:${warningColor};">${data.fullLabel || data.label}</div>
+                        <div style="margin-bottom:6px;">
+                            <span style="color:${mutedColor};font-size:11px;">Source Topic:</span>
+                            <div style="font-family:monospace;font-size:10px;color:#fff;background:rgba(0,0,0,0.3);padding:4px 6px;border-radius:4px;margin-top:2px;">${data.sourceTopic || 'N/A'}</div>
+                        </div>
+                        <div style="margin-bottom:6px;">
+                            <span style="color:${mutedColor};font-size:11px;">Target Topic:</span>
+                            <div style="font-family:monospace;font-size:10px;color:#fff;background:rgba(0,0,0,0.3);padding:4px 6px;border-radius:4px;margin-top:2px;">${data.targetTopic || 'N/A'}</div>
+                        </div>
+                        <div style="display:flex;align-items:center;margin-top:8px;">
+                            <span style="color:${mutedColor};font-size:11px;">Executions:</span>
+                            <span style="margin-left:8px;background:${warningColor};color:#000;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">${data.execCount || 0}</span>
+                        </div>
+                        ${data.ruleId ? `<div style="color:${dimColor};font-size:10px;margin-top:8px;font-family:monospace;">ID: ${data.ruleId}</div>` : ''}`;
+            }
+
+            if (!html) return;
+
+            topologyTooltip.innerHTML = html;
+            topologyTooltip.style.display = 'block';
+
+            // Position relative to viewport
+            const x = event.originalEvent ? event.originalEvent.clientX : event.position.x;
+            const y = event.originalEvent ? event.originalEvent.clientY : event.position.y;
+            topologyTooltip.style.left = (x + 15) + 'px';
+            topologyTooltip.style.top = (y + 15) + 'px';
+        }
+
+        function hideTooltip() {
+            if (topologyTooltip) {
+                topologyTooltip.style.display = 'none';
+            }
+        }
+
+        function initTopology(graphData) {
+            const container = document.getElementById('topology-container');
+            if (!container) return;
+
+            topologyCy = cytoscape({
+                container: container,
+                elements: [...graphData.nodes, ...graphData.edges],
+                style: [
+                    {
+                        selector: 'node[type="hub"]',
+                        style: {
+                            'background-color': '#111',
+                            'label': function(ele) {
+                                return redactLabel(ele.data('label') || '');
+                            },
+                            'color': protocolColors.hub,
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'font-size': '12px',
+                            'font-weight': 'bold',
+                            'width': 70,
+                            'height': 70,
+                            'border-width': 3,
+                            'border-color': protocolColors.hub,
+                            'text-outline-color': '#000',
+                            'text-outline-width': 2,
+                            'shadow-blur': 15,
+                            'shadow-color': protocolColors.hub,
+                            'shadow-opacity': 0.5,
+                            'shadow-offset-x': 0,
+                            'shadow-offset-y': 0
+                        }
+                    },
+                    {
+                        selector: 'node[type="device"]',
+                        style: {
+                            'background-color': '#1a1a1a',
+                            // Break on every whitespace run AND every
+                            // underscore so "living_room_light" and
+                            // "Living Room Light" both wrap identically
+                            // across three lines.
+                            'label': function(ele) {
+                                const label = redactLabel(ele.data('label') || '');
+                                return label.replace(/[\s_]+/g, '\n');
+                            },
+                            'color': '#fff',
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'text-wrap': 'wrap',
+                            'text-max-width': '98px',
+                            // Size the text so the longest word fills the
+                            // node horizontally AND the line-count fits
+                            // vertically. Clamped 9–22 so tiny single-word
+                            // labels don't balloon and giant names stay
+                            // readable.
+                            'font-size': function(ele) {
+                                const raw = (ele.data('label') || '').replace(/[\s_]+/g, '\n');
+                                const lines = raw.split('\n').filter(function(l) { return l.length > 0; });
+                                if (lines.length === 0) return 12;
+                                let longest = 0;
+                                for (let i = 0; i < lines.length; i++) {
+                                    if (lines[i].length > longest) longest = lines[i].length;
+                                }
+                                // Inner box ~98×98 after padding + border.
+                                // Char width ≈ 0.58 × font-size at weight 600.
+                                const byWidth = 98 / (Math.max(1, longest) * 0.58);
+                                const byHeight = (98 / lines.length) / 1.15;
+                                return Math.max(9, Math.min(22, Math.floor(Math.min(byWidth, byHeight))));
+                            },
+                            'font-weight': '600',
+                            'line-height': 1.15,
+                            'width': 110,
+                            'height': 110,
+                            'padding': '6px',
+                            'shape': 'round-rectangle',
+                            'border-width': 3,
+                            'border-color': function(ele) {
+                                const protocol = ele.data('protocol') || 'unknown';
+                                return ele.data('status') === 'online' ? getProtocolColor(protocol) : '#374151';
+                            },
+                            'opacity': function(ele) { return ele.data('status') === 'online' ? 1 : 0.5; },
+                            'text-outline-color': '#000',
+                            'text-outline-width': 2
+                        }
+                    },
+                    {
+                        selector: 'edge[type="device-link"]',
+                        style: {
+                            'width': 2,
+                            'line-color': function(ele) { return getProtocolColor(ele.data('protocol')); },
+                            'curve-style': 'bezier',
+                            'opacity': 0.4,
+                            'line-style': 'solid'
+                        }
+                    },
+                    {
+                        selector: 'edge[type="rule"]',
+                        style: {
+                            'width': function(ele) { return Math.min(3 + (ele.data('execCount') || 0) * 0.3, 8); },
+                            'line-color': '#f59e0b',
+                            'target-arrow-color': '#f59e0b',
+                            'target-arrow-shape': 'triangle',
+                            'arrow-scale': 1.4,
+                            'curve-style': 'unbundled-bezier',
+                            'control-point-distances': function(ele) {
+                                const container = document.getElementById('topology-container');
+                                if (!container) return [-150];
+                                const centerX = container.offsetWidth / 2;
+                                const centerY = container.offsetHeight / 2;
+                                const src = ele.source().position();
+                                const tgt = ele.target().position();
+                                const midX = (src.x + tgt.x) / 2;
+                                const midY = (src.y + tgt.y) / 2;
+                                const dx = midX - centerX;
+                                const dy = midY - centerY;
+                                const edgeDx = tgt.x - src.x;
+                                const edgeDy = tgt.y - src.y;
+                                const cross = edgeDx * dy - edgeDy * dx;
+                                const sign = cross >= 0 ? 1 : -1;
+                                const dist = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy);
+                                return [sign * Math.max(80, dist * 0.4)];
+                            },
+                            'control-point-weights': [0.5],
+                            'label': 'data(label)',
+                            'font-size': '9px',
+                            'color': '#fff',
+                            'text-rotation': 'autorotate',
+                            'text-margin-y': -12,
+                            'text-outline-color': 'var(--hermod-bg)',
+                            'text-outline-width': 2,
+                            'display': 'none'
+                        }
+                    },
+                    {
+                        selector: 'edge[type="rule"].highlighted',
+                        style: {
+                            'display': 'element',
+                            'opacity': 1,
+                            'z-index': 100
+                        }
+                    },
+                    {
+                        selector: 'node.selected-node',
+                        style: {
+                            'border-width': 5,
+                            'border-color': '#f59e0b',
+                            'z-index': 100
+                        }
+                    },
+                    {
+                        selector: 'node.path-node',
+                        style: {
+                            'border-width': 4,
+                            'border-color': '#f59e0b',
+                            'opacity': 1
+                        }
+                    },
+                    {
+                        selector: 'node.dimmed',
+                        style: {
+                            'opacity': 0.25
+                        }
+                    },
+                    {
+                        selector: 'edge.dimmed',
+                        style: {
+                            'opacity': 0.15
+                        }
+                    },
+                    {
+                        selector: '.hidden-node',
+                        style: {
+                            'display': 'none'
+                        }
+                    },
+                    {
+                        selector: '.filter-dimmed',
+                        style: {
+                            'opacity': 0.12
+                        }
+                    },
+                    {
+                        selector: 'node.filter-match',
+                        style: {
+                            'border-width': 4,
+                            'border-color': '#fbbf24',
+                            'shadow-blur': 20,
+                            'shadow-color': '#fbbf24',
+                            'shadow-opacity': 0.6,
+                            'shadow-offset-x': 0,
+                            'shadow-offset-y': 0,
+                            'z-index': 50
+                        }
+                    },
+                    {
+                        selector: 'node.focus-pulse',
+                        style: {
+                            'border-width': 6,
+                            'border-color': '#f59e0b',
+                            'shadow-blur': 30,
+                            'shadow-color': '#f59e0b',
+                            'shadow-opacity': 0.9,
+                            'z-index': 200
+                        }
+                    }
+                ],
+                layout: { name: 'preset' },
+                wheelSensitivity: 0.3,
+                minZoom: 0.3,
+                maxZoom: 3,
+                boxSelectionEnabled: false
+            });
+
+            runRadialLayout();
+
+            createTooltip();
+
+            // Track current focused node for toggle behavior
+            let focusedNodeId = null;
+
+            // Edge click handler for rule info
+            topologyCy.on('tap', 'edge[type="rule"]', function(evt) {
+                const edge = evt.target;
+                showTooltip(edge, evt);
+            });
+
+            topologyCy.on('tap', 'node', function(evt) {
+                const node = evt.target;
+                const nodeId = node.id();
+
+                // Toggle: if clicking the same node, reset view
+                if (focusedNodeId === nodeId) {
+                    focusedNodeId = null;
+                    topologyCy.elements().removeClass('selected-node path-node highlighted dimmed hidden-node');
+                    hideTooltip();
+                    if (topologyDotNetRef) {
+                        // Empty string clears the side panel on the
+                        // Razor side without dispatching another nav.
+                        topologyDotNetRef.invokeMethodAsync('OnTopologyNodeSelected', '').catch(() => {});
+                    }
+                    return;
+                }
+
+                focusedNodeId = nodeId;
+                if (topologyDotNetRef) {
+                    topologyDotNetRef.invokeMethodAsync('OnTopologyNodeSelected', nodeId).catch(() => {});
+                }
+
+                // Clear previous selection
+                topologyCy.elements().removeClass('selected-node path-node highlighted dimmed hidden-node');
+
+                // Find all rule edges connected to this node (as source or target)
+                const connectedRules = topologyCy.edges('[type="rule"]').filter(edge => {
+                    return edge.source().id() === nodeId || edge.target().id() === nodeId;
+                });
+
+                // Collect all nodes that should be visible
+                const visibleNodes = new Set([nodeId]);
+                const hub = topologyCy.nodes('[type="hub"]');
+                if (hub.length) visibleNodes.add(hub.id());
+
+                connectedRules.forEach(edge => {
+                    visibleNodes.add(edge.source().id());
+                    visibleNodes.add(edge.target().id());
+                });
+
+                // Hide unrelated nodes, dim related but not selected
+                topologyCy.nodes().forEach(n => {
+                    const nid = n.id();
+                    if (nid === nodeId) {
+                        n.addClass('selected-node');
+                    } else if (visibleNodes.has(nid)) {
+                        n.addClass('path-node');
+                    } else {
+                        n.addClass('hidden-node');
+                    }
+                });
+
+                // Handle edges
+                topologyCy.edges().forEach(edge => {
+                    const srcVisible = visibleNodes.has(edge.source().id());
+                    const tgtVisible = visibleNodes.has(edge.target().id());
+
+                    if (edge.data('type') === 'rule') {
+                        if (connectedRules.includes(edge)) {
+                            edge.addClass('highlighted');
+                        } else {
+                            edge.addClass('hidden-node');
+                        }
+                    } else {
+                        // device-link edges
+                        if (srcVisible && tgtVisible) {
+                            // Keep visible
+                        } else {
+                            edge.addClass('hidden-node');
+                        }
+                    }
+                });
+
+                showTooltip(evt.target, evt);
+            });
+
+            topologyCy.on('tap', function(evt) {
+                if (evt.target === topologyCy) {
+                    // Clicked on background - clear all highlights and reset focus
+                    focusedNodeId = null;
+                    topologyCy.elements().removeClass('selected-node path-node highlighted dimmed hidden-node');
+                    hideTooltip();
+                }
+            });
+
+            topologyCy.on('pan zoom drag', function() {
+                hideTooltip();
+            });
+        }
+
+        function runRadialLayout() {
+            if (!topologyCy) return;
+
+            const container = document.getElementById('topology-container');
+            const width = container ? container.offsetWidth : 800;
+            const height = container ? container.offsetHeight : 500;
+            const centerX = width / 2;
+            const centerY = height / 2;
+
+            // Position hub at center
+            const hub = topologyCy.nodes('[type="hub"]');
+            if (hub.length) {
+                hub.position({ x: centerX, y: centerY });
+            }
+
+            // Group devices by protocol
+            const devices = topologyCy.nodes('[type="device"]');
+            const devicesByProtocol = {};
+
+            devices.forEach(device => {
+                const proto = device.data('protocol') || 'unknown';
+                if (!devicesByProtocol[proto]) devicesByProtocol[proto] = [];
+                devicesByProtocol[proto].push(device);
+            });
+
+            const protocols = Object.keys(devicesByProtocol).sort();
+            if (protocols.length === 0) {
+                topologyCy.fit(null, 50);
+                return;
+            }
+
+            const nodeSize = 110;
+            const nodeSpacing = 130; // Minimum center-to-center spacing for the larger nodes
+            const baseRadius = 190;
+            const ringSpacing = 135;
+
+            // Each protocol gets an equal sector
+            const sectorAngle = (2 * Math.PI) / protocols.length;
+            const sectorPadding = 0.15; // 15% padding on each side of sector
+
+            protocols.forEach((proto, protoIdx) => {
+                const protoDevices = devicesByProtocol[proto];
+                const sectorStart = protoIdx * sectorAngle - Math.PI / 2;
+                const usableAngle = sectorAngle * (1 - 2 * sectorPadding);
+                const sectorCenter = sectorStart + sectorAngle / 2;
+
+                // Calculate how many devices fit per ring
+                const devicesPerRing = (radius) => {
+                    const arcLength = usableAngle * radius;
+                    return Math.max(1, Math.floor(arcLength / nodeSpacing));
+                };
+
+                // Distribute devices across rings
+                let deviceIndex = 0;
+                let ring = 0;
+
+                while (deviceIndex < protoDevices.length) {
+                    const currentRadius = baseRadius + ring * ringSpacing;
+                    const maxInRing = devicesPerRing(currentRadius);
+                    const remaining = protoDevices.length - deviceIndex;
+                    const inThisRing = Math.min(maxInRing, remaining);
+
+                    // Position devices in this ring
+                    const angleStep = inThisRing > 1 ? usableAngle / (inThisRing - 1) : 0;
+                    const startAngle = sectorStart + sectorAngle * sectorPadding;
+
+                    for (let i = 0; i < inThisRing; i++) {
+                        const device = protoDevices[deviceIndex];
+                        const angle = inThisRing === 1
+                            ? sectorCenter
+                            : startAngle + angleStep * i;
+
+                        device.position({
+                            x: centerX + currentRadius * Math.cos(angle),
+                            y: centerY + currentRadius * Math.sin(angle)
+                        });
+                        deviceIndex++;
+                    }
+                    ring++;
+                }
+            });
+
+            topologyCy.fit(null, 40);
+        }
+
+        function updateTopology(graphData, searchQuery) {
+            if (!topologyCy) {
+                initTopology(graphData);
+            } else {
+                topologyCy.elements().remove();
+                topologyCy.add([...graphData.nodes, ...graphData.edges]);
+                runRadialLayout();
+            }
+            if (searchQuery && searchQuery.length) {
+                filterTopology(searchQuery);
+            }
+        }
+
+        function filterTopology(query) {
+            if (!topologyCy) return;
+            const q = (query || '').trim().toLowerCase();
+            topologyCy.elements().removeClass('filter-dimmed filter-match');
+            if (!q) return;
+
+            const matched = new Set();
+            topologyCy.nodes().forEach(node => {
+                const data = node.data();
+                if (data.type === 'hub') {
+                    matched.add(node.id());
+                    return;
+                }
+                const blob = (data.search || '').toLowerCase() || ((data.fullName || data.label || '') + ' ' + (data.protocol || '')).toLowerCase();
+                if (blob.indexOf(q) !== -1) {
+                    matched.add(node.id());
+                    node.addClass('filter-match');
+                }
+            });
+
+            topologyCy.nodes().forEach(node => {
+                if (!matched.has(node.id()) && node.data('type') !== 'hub') {
+                    node.addClass('filter-dimmed');
+                }
+            });
+            topologyCy.edges().forEach(edge => {
+                const src = edge.source().id();
+                const tgt = edge.target().id();
+                if (!matched.has(src) && !matched.has(tgt)) {
+                    edge.addClass('filter-dimmed');
+                }
+            });
+        }
+
+        function focusTopologyNode(nodeId) {
+            if (!topologyCy) return;
+            const node = topologyCy.getElementById(nodeId);
+            if (!node || node.empty()) return;
+            topologyCy.animate({
+                center: { eles: node },
+                zoom: 1.4,
+                duration: 450,
+                easing: 'ease-out'
+            });
+            node.addClass('focus-pulse');
+            setTimeout(() => { node.removeClass('focus-pulse'); }, 2800);
+        }
+
+        function fitTopology() {
+            if (topologyCy) {
+                topologyCy.fit(null, 40);
+            }
+        }
+
+        function layoutTopology() {
+            runRadialLayout();
+        }
+
+        function destroyTopology() {
+            if (topologyCy) {
+                topologyCy.destroy();
+                topologyCy = null;
+            }
+        }
+    </script>
+</body>
+
+</html>

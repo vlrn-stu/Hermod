@@ -1,0 +1,108 @@
+# NanoMQ prod — mTLS-only on :8883 (no plaintext :1883). verify_peer=true
+# forces a CA-signed client cert; password auth is layered on top so a
+# compromised cert key alone can't connect.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nanomq-config
+  namespace: hermod
+data:
+  nanomq.conf.tmpl: |
+    mqtt {
+      property_size = 32
+      max_packet_size = 256KB
+      max_mqueue_len = 2048
+      retry_interval = 10s
+      keepalive_multiplier = 1.25
+    }
+
+    listeners.ssl {
+      bind = "0.0.0.0:8883"
+      keyfile = "/etc/nanomq/tls/tls.key"
+      certfile = "/etc/nanomq/tls/tls.crt"
+      cacertfile = "/etc/nanomq/tls/ca.crt"
+      verify_peer = true
+      fail_if_no_peer_cert = true
+    }
+
+    listeners.ws {
+      bind = "0.0.0.0:8083/mqtt"
+    }
+
+    http_server {
+      port = 8081
+      limit_conn = 32
+      username = "__HTTP_USER__"
+      password = "__HTTP_PASSWORD__"
+      auth_type = basic
+    }
+
+    log {
+      to = [console]
+      level = error
+    }
+
+    auth {
+      allow_anonymous = false
+      no_match = deny
+      deny_action = disconnect
+      # Multi-user pwd file rendered at boot by nanomq-acl-render init
+      # container (nanomq-acl-init-patch.yaml) from the
+      # hermod-mqtt-users Secret. Five accounts: coord, zigbee2mqtt,
+      # lora2mqtt, wifi2mqtt-bridge, plus deny-all default.
+      password = {include "/etc/nanomq/auth/nanomq_pwd.conf"}
+      # Per-user topic ACL — same render init produces this file from
+      # templates/nanomq_acl.conf.tmpl (committed). A connected client
+      # whose username doesn't match any rule falls through to the
+      # default-deny terminal rule in the template.
+      acl = {include "/etc/nanomq/auth/nanomq_acl.conf"}
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nanomq
+  namespace: hermod
+spec:
+  template:
+    spec:
+      containers:
+        - name: nanomq
+          ports:
+            - name: mqtt-tls
+              containerPort: 8883
+              protocol: TCP
+            - name: http-api
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: NANOMQ_BROKER_URL
+              value: "tls+nmq-tcp://0.0.0.0:8883"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: nanomq-tls
+              mountPath: /etc/nanomq/tls
+              readOnly: true
+      volumes:
+        - name: nanomq-tls
+          projected:
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-nanomq-server-tls
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key

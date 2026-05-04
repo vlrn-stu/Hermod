@@ -1,0 +1,198 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault42
+  namespace: hermod
+  labels:
+    app: vault42
+    component: authentication
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault42
+  template:
+    metadata:
+      labels:
+        app: vault42
+        component: authentication
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL..."
+              until nc -z postgres.hermod.svc.cluster.local 5432; do
+                echo "PostgreSQL not ready, sleeping..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+        # Renders seed.json.tmpl with passwords from the
+        # vault42-seed-credentials Secret. Keeps first-login passwords
+        # out of the ConfigMap (which is checked into git).
+        - name: render-seed
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # Two render paths:
+              #   (a) VAULT42_SEED_JSON non-empty: operator built a roster
+              #       locally with `hermod.sh users` and ensure-secrets.sh
+              #       pushed it into the seed-json key. Write straight
+              #       through to /rendered/seed.json, skip the template.
+              #   (b) VAULT42_SEED_JSON empty (default install OR the
+              #       post-rollout cleanup state): fall back to the
+              #       3-account template, substituting passwords from the
+              #       vault42-seed-credentials viewer/user/operator-password
+              #       keys. The DISABLED sentinel in any password slot
+              #       drops that user object via the awk filter below.
+              # Stays on busybox so the init container has no egress
+              # dependency (prod-pi NetworkPolicies deny by default).
+              if [ -n "${VAULT42_SEED_JSON:-}" ]; then
+                printf '%s' "$VAULT42_SEED_JSON" > /rendered/seed.json
+                echo "seed.json from operator-managed seed ($(wc -c </rendered/seed.json) bytes, $(printf '%s' "$VAULT42_SEED_JSON" | grep -c '"email"') users)"
+                exit 0
+              fi
+              sed \
+                -e "s|__VIEWER_PASSWORD__|${VAULT42_VIEWER_PASSWORD}|g" \
+                -e "s|__USER_PASSWORD__|${VAULT42_USER_PASSWORD}|g" \
+                -e "s|__OPERATOR_PASSWORD__|${VAULT42_OPERATOR_PASSWORD}|g" \
+                /tmpl/seed.json.tmpl > /tmp/seed.full.json
+              # Template emits each user object as opening "{" on its own
+              # line, body lines, and a closing "}" or "},". Buffer
+              # between markers; emit only when the buffered block lacks
+              # the DISABLED sentinel; everything outside a buffered
+              # block (the wrapping "users": [ ] frame) passes through.
+              awk '
+                BEGIN { buffering = 0; skip = 0; buf = "" }
+                buffering == 0 && /^[[:space:]]*\{[[:space:]]*$/ {
+                    buffering = 1; skip = 0; buf = $0
+                    next
+                }
+                buffering == 1 {
+                    buf = buf "\n" $0
+                    if ($0 ~ /"password":[[:space:]]*"DISABLED"/) skip = 1
+                    if ($0 ~ /^[[:space:]]*\},?[[:space:]]*$/) {
+                        if (skip == 0) print buf
+                        buffering = 0; buf = ""
+                    }
+                    next
+                }
+                { print }
+              ' /tmp/seed.full.json > /rendered/seed.json
+              echo "seed.json rendered from template ($(wc -c </rendered/seed.json) bytes)"
+          env:
+            # Operator-managed seed (preferred path). Optional: when the
+            # Secret has no `seed-json` key yet (fresh install before
+            # `hermod.sh users init` ever ran), the env var is empty and
+            # the template path runs.
+            - name: VAULT42_SEED_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-seed-credentials
+                  key: seed-json
+                  optional: true
+            - name: VAULT42_VIEWER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-seed-credentials
+                  key: viewer-password
+            - name: VAULT42_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-seed-credentials
+                  key: user-password
+            - name: VAULT42_OPERATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vault42-seed-credentials
+                  key: operator-password
+          volumeMounts:
+            - name: vault42-seed-template
+              mountPath: /tmpl
+              readOnly: true
+            - name: vault42-seed-rendered
+              mountPath: /rendered
+      containers:
+        - name: vault42
+          # GHCR image from github.com/42-v/vault42 release pipeline.
+          # Until the GHCR pipeline is live: lib/publish-vault42-to-pi.sh
+          # side-loads a local arm64 build under the same tag and applies a
+          # transient `imagePullPolicy: Never` patch (wiped by next install).
+          image: ghcr.io/42-v/vault42:0.4.2
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: vault42-config
+          # The vault42 binary loads secrets via the _FILE convention
+          # (LoadSecret reads $KEY_FILE then zeroes the file). Do NOT
+          # rename — these env names are an upstream contract.
+          env:
+            - name: MASTER_KEY_FILE
+              value: /etc/vault42/secrets/master-key
+            - name: HMAC_SECRET_FILE
+              value: /etc/vault42/secrets/hmac-secret
+            - name: SIGNING_KEY_FILE
+              value: /etc/vault42/secrets/signing-key
+            - name: DB_MIG_PASSWORD_FILE
+              value: /etc/vault42/secrets/db-mig-password
+            - name: DB_APP_PASSWORD_FILE
+              value: /etc/vault42/secrets/db-app-password
+          resources:
+            requests:
+              memory: "96Mi"
+              cpu: "50m"
+            limits:
+              # 256Mi (was 128): OOMKilled during auth-heavy soak. Idle
+              # ~50Mi; bursts under repeated logins climb fast.
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 5
+          volumeMounts:
+            # Mount the rendered seed (passwords substituted), NOT the
+            # ConfigMap template.
+            - name: vault42-seed-rendered
+              mountPath: /app/seed
+            - name: vault42-secrets
+              mountPath: /etc/vault42/secrets
+              readOnly: true
+      volumes:
+        - name: vault42-seed-template
+          configMap:
+            name: vault42-seed
+        - name: vault42-seed-rendered
+          emptyDir: {}
+        - name: vault42-secrets
+          secret:
+            secretName: vault42-secrets
+            # 0444: nonroot user must read; vault42 may also try to
+            # zero+delete after read (errors ignored on RO mounts).
+            defaultMode: 0444

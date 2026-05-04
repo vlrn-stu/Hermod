@@ -1,0 +1,22 @@
+---
+# Base role defaults - override in group_vars or inventory
+
+base_packages:
+  - git
+  - curl
+  - jq
+  - python3-pip
+  - python3-venv
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - net-tools
+  - usbutils    # lsusb for USB device detection
+  - udev
+  - bluez       # ble2mqtt translator needs the host bluetoothd stack
+  - podman      # build hermod-coordinator + lora2mqtt arm64 images on the Pi
+                # (microk8s uses its own containerd; podman is daemonless
+                # and produces OCI images that `microk8s ctr import` accepts)
+
+base_apt_cache_valid_time: 3600   # seconds; skip apt update if cache is fresh

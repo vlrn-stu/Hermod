@@ -1,0 +1,1167 @@
+/* ============================================
+   HERMOD DESIGN SYSTEM v2.0
+   Matrix Green (#00FF41) + AMOLED Dark Theme
+   ============================================ */
+
+/* ============================================
+   CSS CUSTOM PROPERTIES (DARK THEME DEFAULT)
+   ============================================ */
+:root {
+    /* Primary accent - Matrix Green */
+    --hermod-primary: #00FF41;
+    --hermod-primary-dim: #00CC33;
+    --hermod-primary-bright: #33FF66;
+    --hermod-primary-rgb: 0, 255, 65;
+
+    /* AMOLED Dark backgrounds */
+    --hermod-bg: #000000;
+    --hermod-bg-secondary: #0a0a0a;
+    --hermod-bg-elevated: #111111;
+    --hermod-card-bg: #0a0a0a;
+    --hermod-sidebar-bg: #000000;
+
+    /* Text colors */
+    --hermod-text: #f0f0f0;
+    --hermod-text-secondary: #b0b0b0;
+    --hermod-text-muted: #707070;
+    --hermod-text-dim: #505050;
+
+    /* Borders */
+    --hermod-border: #1a1a1a;
+    --hermod-border-light: #252525;
+    --hermod-border-accent: rgba(0, 255, 65, 0.2);
+
+    /* Status colors */
+    --hermod-success: #00FF41;
+    --hermod-warning: #FFB800;
+    --hermod-danger: #FF3B3B;
+    --hermod-info: #00BFFF;
+
+    /* Protocol colors - distinct and vibrant */
+    --hermod-zigbee: #22C55E;
+    --hermod-zigbee-dim: #16A34A;
+    --hermod-bluetooth: #0EA5E9;
+    --hermod-bluetooth-dim: #0284C7;
+    --hermod-lora: #F97316;
+    --hermod-lora-dim: #EA580C;
+    --hermod-wifi: #A855F7;
+    --hermod-wifi-dim: #9333EA;
+    --hermod-universal: #64748B;
+    --hermod-universal-dim: #475569;
+
+    /* Gradients */
+    --hermod-gradient-1: linear-gradient(135deg, #22C55E 0%, #16A34A 100%);
+    --hermod-gradient-2: linear-gradient(135deg, #0EA5E9 0%, #0284C7 100%);
+    --hermod-gradient-3: linear-gradient(135deg, #F97316 0%, #EA580C 100%);
+    --hermod-gradient-4: linear-gradient(135deg, #A855F7 0%, #9333EA 100%);
+    --hermod-gradient-5: linear-gradient(135deg, #64748B 0%, #475569 100%);
+
+    /* Shadows */
+    --hermod-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+    --hermod-shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.6);
+    --hermod-shadow-glow: 0 0 20px rgba(0, 255, 65, 0.15);
+
+    /* Overlay */
+    --hermod-overlay: rgba(0, 0, 0, 0.35);
+
+    /* Transitions */
+    --hermod-transition: 0.2s ease;
+}
+
+/* ============================================
+   LIGHT THEME OVERRIDES
+   ============================================ */
+html.light-theme {
+    --hermod-bg: #f8f9fa;
+    --hermod-bg-secondary: #ffffff;
+    --hermod-bg-elevated: #ffffff;
+    --hermod-card-bg: #ffffff;
+    --hermod-sidebar-bg: #1a1f2e;
+
+    --hermod-text: #1a1a2e;
+    --hermod-text-secondary: #4a4a6a;
+    --hermod-text-muted: #6b7280;
+    --hermod-text-dim: #9ca3af;
+
+    --hermod-border: #e5e7eb;
+    --hermod-border-light: #f3f4f6;
+    --hermod-border-accent: rgba(0, 200, 51, 0.3);
+
+    --hermod-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+    --hermod-shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.12);
+    --hermod-shadow-glow: 0 0 20px rgba(0, 200, 51, 0.1);
+
+    --hermod-overlay: rgba(0, 0, 0, 0.25);
+}
+
+/* ============================================
+   BASE STYLES
+   ============================================ */
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+html, body {
+    font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: var(--hermod-bg);
+    color: var(--hermod-text);
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    transition: background-color var(--hermod-transition), color var(--hermod-transition);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================
+   TYPOGRAPHY
+   ============================================ */
+h1, h2, h3, h4, h5, h6 {
+    color: var(--hermod-text);
+    font-weight: 600;
+    line-height: 1.3;
+    margin-bottom: 0.5rem;
+}
+
+h1 { font-size: 2rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.25rem; }
+h4 { font-size: 1.125rem; }
+h5 { font-size: 1rem; }
+h6 { font-size: 0.875rem; }
+
+p, span, div, li, td, th, label, small {
+    color: inherit;
+}
+
+strong, b {
+    color: var(--hermod-text);
+    font-weight: 600;
+}
+
+a {
+    color: var(--hermod-primary);
+    text-decoration: none;
+    transition: color var(--hermod-transition);
+}
+
+a:hover {
+    color: var(--hermod-primary-bright);
+}
+
+.text-muted {
+    color: var(--hermod-text-muted) !important;
+}
+
+.text-primary {
+    color: var(--hermod-primary) !important;
+}
+
+.text-success {
+    color: var(--hermod-success) !important;
+}
+
+.text-warning {
+    color: var(--hermod-warning) !important;
+}
+
+.text-danger {
+    color: var(--hermod-danger) !important;
+}
+
+.text-info {
+    color: var(--hermod-info) !important;
+}
+
+/* ============================================
+   BUTTONS
+   ============================================ */
+.btn {
+    font-weight: 500;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    transition: all var(--hermod-transition);
+    border: 1px solid transparent;
+}
+
+.btn:focus, .btn:active:focus {
+    box-shadow: 0 0 0 3px rgba(var(--hermod-primary-rgb), 0.25);
+}
+
+.btn-primary {
+    background-color: var(--hermod-primary);
+    border-color: var(--hermod-primary);
+    color: #000000;
+    font-weight: 600;
+}
+
+.btn-primary:hover, .btn-primary:focus {
+    background-color: var(--hermod-primary-bright);
+    border-color: var(--hermod-primary-bright);
+    color: #000000;
+    box-shadow: var(--hermod-shadow-glow);
+}
+
+/* Bootstrap resets background-color to default blue on :disabled via the
+   --bs-btn-bg variables, which the rule above only catches in the default
+   state. Lock disabled buttons to a dimmed brand green so the "you can't
+   click yet" affordance stays in-brand. */
+.btn-primary:disabled, .btn-primary.disabled {
+    background-color: var(--hermod-primary-dim);
+    border-color: var(--hermod-primary-dim);
+    color: #000000;
+    opacity: 0.5;
+}
+
+.btn-outline-primary {
+    color: var(--hermod-primary);
+    border-color: var(--hermod-primary);
+    background: transparent;
+}
+
+.btn-outline-primary:hover {
+    background-color: var(--hermod-primary);
+    border-color: var(--hermod-primary);
+    color: #000000;
+}
+
+.btn-secondary {
+    background-color: var(--hermod-bg-secondary);
+    border-color: var(--hermod-border);
+    color: var(--hermod-text);
+}
+
+.btn-secondary:hover {
+    background-color: var(--hermod-bg-elevated);
+    border-color: var(--hermod-border-light);
+    color: var(--hermod-text);
+}
+
+.btn-outline-secondary {
+    color: var(--hermod-text-secondary);
+    border-color: var(--hermod-border);
+    background: transparent;
+}
+
+.btn-outline-secondary:hover {
+    background-color: var(--hermod-bg-secondary);
+    border-color: var(--hermod-border-light);
+    color: var(--hermod-text);
+}
+
+.btn-light {
+    background-color: var(--hermod-bg-secondary);
+    border-color: var(--hermod-border);
+    color: var(--hermod-text);
+}
+
+.btn-light:hover {
+    background-color: var(--hermod-bg-elevated);
+    border-color: var(--hermod-border-light);
+    color: var(--hermod-text);
+}
+
+.btn-danger {
+    background-color: var(--hermod-danger);
+    border-color: var(--hermod-danger);
+    color: #ffffff;
+}
+
+.btn-danger:hover {
+    background-color: #FF5252;
+    border-color: #FF5252;
+}
+
+.btn-success {
+    background-color: var(--hermod-success);
+    border-color: var(--hermod-success);
+    color: #000000;
+}
+
+.btn-success:hover {
+    background-color: var(--hermod-primary-bright);
+    border-color: var(--hermod-primary-bright);
+}
+
+.btn-warning {
+    background-color: var(--hermod-warning);
+    border-color: var(--hermod-warning);
+    color: #000000;
+}
+
+.btn-info {
+    background-color: var(--hermod-info);
+    border-color: var(--hermod-info);
+    color: #000000;
+}
+
+.btn-link {
+    color: var(--hermod-primary);
+}
+
+.btn-link:hover {
+    color: var(--hermod-primary-bright);
+}
+
+/* ============================================
+   CARDS
+   ============================================ */
+.card {
+    background-color: var(--hermod-card-bg);
+    border: 1px solid var(--hermod-border);
+    border-radius: 12px;
+    color: var(--hermod-text);
+    box-shadow: var(--hermod-shadow);
+    transition: all var(--hermod-transition);
+}
+
+.card:hover {
+    border-color: var(--hermod-border-light);
+}
+
+.card-header {
+    background-color: transparent;
+    border-bottom: 1px solid var(--hermod-border);
+    color: var(--hermod-text);
+    padding: 1rem 1.25rem;
+    font-weight: 600;
+}
+
+.card-body {
+    padding: 1.25rem;
+}
+
+.card-footer {
+    background-color: transparent;
+    border-top: 1px solid var(--hermod-border);
+    padding: 1rem 1.25rem;
+}
+
+/* ============================================
+   STAT CARDS WITH GRADIENTS
+   ============================================ */
+.stat-card {
+    border-radius: 12px;
+    padding: 1.25rem;
+    color: #000000;
+    border: none;
+}
+
+.stat-card h2, .stat-card h3, .stat-card h6, .stat-card p, .stat-card small {
+    color: #000000;
+}
+
+.stat-card .stat-value {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.stat-card .stat-label {
+    opacity: 0.8;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+/* Gradient utilities */
+.hermod-gradient-1 { background: var(--hermod-gradient-1) !important; }
+.hermod-gradient-2 { background: var(--hermod-gradient-2) !important; }
+.hermod-gradient-3 { background: var(--hermod-gradient-3) !important; }
+.hermod-gradient-4 { background: var(--hermod-gradient-4) !important; }
+
+/* Force dark text on gradient cards */
+.hermod-gradient-1, .hermod-gradient-2, .hermod-gradient-3, .hermod-gradient-4,
+[class*="hermod-gradient-"] .card-body,
+[class*="hermod-gradient-"] h2,
+[class*="hermod-gradient-"] h6,
+[class*="hermod-gradient-"] p,
+[class*="hermod-gradient-"] small,
+[class*="hermod-gradient-"] .text-white,
+[class*="hermod-gradient-"] .text-white-50 {
+    color: #000000 !important;
+}
+
+[class*="hermod-gradient-"] .text-white-50 {
+    opacity: 0.7 !important;
+}
+
+/* Protocol backgrounds */
+.protocol-zigbee { background: var(--hermod-gradient-1) !important; }
+.protocol-bluetooth { background: var(--hermod-gradient-2) !important; }
+.protocol-lora { background: var(--hermod-gradient-3) !important; }
+.protocol-wifi { background: var(--hermod-gradient-4) !important; }
+.protocol-universal { background: var(--hermod-gradient-5) !important; }
+
+[class*="protocol-"] .card-body,
+[class*="protocol-"] h2,
+[class*="protocol-"] h6,
+[class*="protocol-"] p,
+[class*="protocol-"] small,
+[class*="protocol-"] .text-white,
+[class*="protocol-"] .text-white-50 {
+    color: #000000 !important;
+}
+
+/* ============================================
+   FORMS
+   ============================================ */
+.form-control, .form-select {
+    background-color: var(--hermod-bg-secondary);
+    border: 1px solid var(--hermod-border);
+    border-radius: 8px;
+    color: var(--hermod-text);
+    padding: 0.625rem 0.875rem;
+    transition: all var(--hermod-transition);
+}
+
+.form-control:focus, .form-select:focus {
+    background-color: var(--hermod-bg-secondary);
+    border-color: var(--hermod-primary);
+    color: var(--hermod-text);
+    box-shadow: 0 0 0 3px rgba(var(--hermod-primary-rgb), 0.15);
+    outline: none;
+}
+
+.form-control::placeholder {
+    color: var(--hermod-text-muted);
+}
+
+.form-label {
+    color: var(--hermod-text);
+    font-weight: 500;
+    margin-bottom: 0.375rem;
+}
+
+.form-check-input {
+    background-color: var(--hermod-bg-secondary);
+    border: 2px solid var(--hermod-border);
+    width: 1.125rem;
+    height: 1.125rem;
+}
+
+.form-check-input:checked {
+    background-color: var(--hermod-primary);
+    border-color: var(--hermod-primary);
+}
+
+.form-check-input:focus {
+    box-shadow: 0 0 0 3px rgba(var(--hermod-primary-rgb), 0.15);
+}
+
+.form-check-label {
+    color: var(--hermod-text);
+}
+
+/* Toggle switch */
+.form-switch .form-check-input {
+    width: 2.5rem;
+    height: 1.25rem;
+    background-color: var(--hermod-border);
+    border: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23666'/%3e%3c/svg%3e");
+}
+
+.form-switch .form-check-input:checked {
+    background-color: var(--hermod-primary);
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23000'/%3e%3c/svg%3e");
+}
+
+.input-group-text {
+    background-color: var(--hermod-bg-secondary);
+    border: 1px solid var(--hermod-border);
+    color: var(--hermod-text-secondary);
+}
+
+/* Floating labels */
+.form-floating > .form-control::placeholder,
+.form-floating > .form-control-plaintext::placeholder {
+    color: transparent;
+}
+
+.form-floating > label {
+    color: var(--hermod-text-muted);
+}
+
+/* Validation */
+.valid.modified:not([type=checkbox]) {
+    border-color: var(--hermod-success);
+}
+
+.invalid {
+    border-color: var(--hermod-danger);
+}
+
+.validation-message {
+    color: var(--hermod-danger);
+    font-size: 0.875rem;
+    margin-top: 0.25rem;
+}
+
+/* ============================================
+   TABLES
+   ============================================ */
+.table {
+    color: var(--hermod-text);
+    --bs-table-bg: transparent;
+    --bs-table-border-color: var(--hermod-border);
+    margin-bottom: 0;
+}
+
+.table > :not(caption) > * > * {
+    background-color: transparent;
+    color: var(--hermod-text);
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid var(--hermod-border);
+}
+
+.table > thead {
+    background-color: var(--hermod-bg-secondary);
+}
+
+.table > thead > tr > th {
+    font-weight: 600;
+    color: var(--hermod-text);
+    border-bottom: 2px solid var(--hermod-border);
+}
+
+.table-hover > tbody > tr:hover > * {
+    background-color: rgba(var(--hermod-primary-rgb), 0.05);
+    color: var(--hermod-text);
+}
+
+.table-light,
+.table-light th,
+.table-light td {
+    background-color: var(--hermod-bg-secondary) !important;
+    color: var(--hermod-text) !important;
+}
+
+thead.sticky-top,
+thead.sticky-top th {
+    background-color: var(--hermod-card-bg) !important;
+    z-index: 10;
+}
+
+/* ============================================
+   BADGES
+   ============================================ */
+.badge {
+    font-weight: 500;
+    padding: 0.375rem 0.625rem;
+    border-radius: 6px;
+}
+
+.badge.bg-primary {
+    background-color: var(--hermod-primary) !important;
+    color: #000000;
+}
+
+.badge.bg-secondary {
+    background-color: var(--hermod-bg-elevated) !important;
+    color: var(--hermod-text);
+    border: 1px solid var(--hermod-border);
+}
+
+.badge.bg-success {
+    background-color: var(--hermod-success) !important;
+    color: #000000;
+}
+
+.badge.bg-warning {
+    background-color: var(--hermod-warning) !important;
+    color: #000000;
+}
+
+.badge.bg-danger {
+    background-color: var(--hermod-danger) !important;
+    color: #ffffff;
+}
+
+.badge.bg-info {
+    background-color: var(--hermod-info) !important;
+    color: #000000;
+}
+
+/* ============================================
+   ALERTS
+   ============================================ */
+.alert {
+    border-radius: 8px;
+    border: 1px solid;
+    padding: 1rem 1.25rem;
+}
+
+.alert-success {
+    background-color: rgba(var(--hermod-primary-rgb), 0.1);
+    border-color: rgba(var(--hermod-primary-rgb), 0.3);
+    color: var(--hermod-success);
+}
+
+.alert-danger {
+    background-color: rgba(255, 59, 59, 0.1);
+    border-color: rgba(255, 59, 59, 0.3);
+    color: var(--hermod-danger);
+}
+
+.alert-warning {
+    background-color: rgba(255, 184, 0, 0.1);
+    border-color: rgba(255, 184, 0, 0.3);
+    color: var(--hermod-warning);
+}
+
+.alert-info {
+    background-color: rgba(0, 191, 255, 0.1);
+    border-color: rgba(0, 191, 255, 0.3);
+    color: var(--hermod-info);
+}
+
+.alert a, .alert .alert-link {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+}
+
+/* ============================================
+   MODALS
+   ============================================ */
+.modal-content {
+    background-color: var(--hermod-card-bg);
+    border: 1px solid var(--hermod-border);
+    border-radius: 12px;
+    color: var(--hermod-text);
+    box-shadow: var(--hermod-shadow-lg);
+}
+
+.modal-header {
+    border-bottom: 1px solid var(--hermod-border);
+    padding: 1.25rem;
+}
+
+.modal-body {
+    padding: 1.25rem;
+}
+
+.modal-footer {
+    border-top: 1px solid var(--hermod-border);
+    padding: 1rem 1.25rem;
+}
+
+.modal-overlay {
+    background: var(--hermod-overlay);
+    backdrop-filter: blur(8px);
+}
+
+.btn-close {
+    filter: invert(0.7);
+}
+
+html.light-theme .btn-close {
+    filter: none;
+}
+
+/* ============================================
+   DROPDOWNS
+   ============================================ */
+.dropdown-menu {
+    background-color: var(--hermod-card-bg);
+    border: 1px solid var(--hermod-border);
+    border-radius: 8px;
+    box-shadow: var(--hermod-shadow);
+    padding: 0.5rem;
+}
+
+.dropdown-item {
+    color: var(--hermod-text);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    transition: all var(--hermod-transition);
+}
+
+.dropdown-item:hover, .dropdown-item:focus {
+    background-color: rgba(var(--hermod-primary-rgb), 0.1);
+    color: var(--hermod-text);
+}
+
+.dropdown-divider {
+    border-color: var(--hermod-border);
+    margin: 0.5rem 0;
+}
+
+/* ============================================
+   LIST GROUPS
+   ============================================ */
+.list-group-item {
+    background-color: var(--hermod-card-bg);
+    border: 1px solid var(--hermod-border);
+    color: var(--hermod-text);
+    transition: all var(--hermod-transition);
+}
+
+.list-group-item:hover {
+    background-color: var(--hermod-bg-secondary);
+}
+
+.list-group-flush .list-group-item {
+    border-left: 0;
+    border-right: 0;
+}
+
+/* ============================================
+   NAV TABS & PILLS
+   ============================================ */
+.nav-tabs {
+    border-bottom: 1px solid var(--hermod-border);
+}
+
+.nav-tabs .nav-link {
+    color: var(--hermod-text-muted);
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 0.75rem 1rem;
+    transition: all var(--hermod-transition);
+}
+
+.nav-tabs .nav-link:hover {
+    color: var(--hermod-text);
+    border-bottom-color: var(--hermod-border);
+}
+
+.nav-tabs .nav-link.active {
+    background-color: transparent;
+    color: var(--hermod-primary);
+    border-bottom-color: var(--hermod-primary);
+}
+
+.nav-pills .nav-link {
+    color: var(--hermod-text-muted);
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+}
+
+.nav-pills .nav-link.active {
+    background-color: var(--hermod-primary);
+    color: #000000;
+}
+
+/* ============================================
+   PROGRESS BARS
+   ============================================ */
+.progress {
+    background-color: var(--hermod-bg-secondary);
+    border-radius: 6px;
+    height: 8px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    background-color: var(--hermod-primary);
+    transition: width 0.3s ease;
+}
+
+/* ============================================
+   SPINNERS
+   ============================================ */
+.spinner-border {
+    color: var(--hermod-primary);
+}
+
+/* ============================================
+   CODE & PRE
+   ============================================ */
+code {
+    color: var(--hermod-primary);
+    background-color: rgba(var(--hermod-primary-rgb), 0.1);
+    padding: 0.125rem 0.375rem;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.875em;
+}
+
+pre {
+    background-color: var(--hermod-bg-secondary);
+    border: 1px solid var(--hermod-border);
+    border-radius: 8px;
+    color: var(--hermod-text);
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+pre code {
+    background-color: transparent;
+    padding: 0;
+    color: inherit;
+}
+
+/* ============================================
+   BACKGROUNDS
+   ============================================ */
+.bg-light {
+    background-color: var(--hermod-bg-secondary) !important;
+    color: var(--hermod-text) !important;
+}
+
+.bg-dark {
+    background-color: var(--hermod-bg) !important;
+}
+
+.bg-light.rounded-3,
+.p-3.rounded-3.bg-light {
+    background-color: var(--hermod-bg-secondary) !important;
+    color: var(--hermod-text) !important;
+}
+
+/* ============================================
+   BORDERS
+   ============================================ */
+.border {
+    border-color: var(--hermod-border) !important;
+}
+
+.border-bottom {
+    border-bottom-color: var(--hermod-border) !important;
+}
+
+/* ============================================
+   SHADOWS
+   ============================================ */
+.shadow-sm {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+}
+
+.shadow {
+    box-shadow: var(--hermod-shadow) !important;
+}
+
+.shadow-lg {
+    box-shadow: var(--hermod-shadow-lg) !important;
+}
+
+/* ============================================
+   SCROLLBARS
+   ============================================ */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--hermod-bg);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--hermod-border-light);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--hermod-text-muted);
+}
+
+/* ============================================
+   CONTENT AREA
+   ============================================ */
+.content {
+    padding-top: 1.5rem;
+}
+
+h1:focus {
+    outline: none;
+}
+
+/* ============================================
+   AUTH PAGES (LOGIN, SETUP)
+   ============================================ */
+.auth-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--hermod-bg);
+    padding: 2rem;
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-page::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background:
+        radial-gradient(circle at 20% 80%, rgba(var(--hermod-primary-rgb), 0.05) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(var(--hermod-primary-rgb), 0.03) 0%, transparent 50%);
+    pointer-events: none;
+}
+
+html.light-theme .auth-page {
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+html.light-theme .auth-page::before {
+    background:
+        radial-gradient(circle at 20% 80%, rgba(0, 200, 51, 0.08) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(0, 200, 51, 0.05) 0%, transparent 50%);
+}
+
+.auth-card {
+    background: var(--hermod-card-bg);
+    border: 1px solid var(--hermod-border);
+    border-radius: 16px;
+    padding: 2.5rem;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: var(--hermod-shadow-lg);
+    position: relative;
+    z-index: 1;
+}
+
+/* ============================================
+   ERROR BOUNDARY
+   ============================================ */
+.blazor-error-boundary {
+    background: var(--hermod-danger);
+    padding: 1rem 1rem 1rem 3.5rem;
+    color: white;
+    border-radius: 8px;
+    position: relative;
+}
+
+.blazor-error-boundary::before {
+    content: '!';
+    position: absolute;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    background: rgba(255,255,255,0.2);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+}
+
+.blazor-error-boundary::after {
+    content: "An error has occurred.";
+}
+
+/* ============================================
+   LIGHT THEME SPECIFIC OVERRIDES
+   ============================================ */
+html.light-theme body {
+    background-color: #f8f9fa;
+}
+
+html.light-theme .card {
+    border-color: #e5e7eb;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+html.light-theme .card-header {
+    background-color: #f9fafb;
+}
+
+html.light-theme .table > thead {
+    background-color: #f9fafb;
+}
+
+html.light-theme .form-control,
+html.light-theme .form-select {
+    background-color: #ffffff;
+    border-color: #e5e7eb;
+}
+
+html.light-theme .form-switch .form-check-input {
+    background-color: #d1d5db;
+}
+
+html.light-theme code {
+    color: #00AA2D;
+    background-color: rgba(0, 200, 51, 0.1);
+}
+
+html.light-theme .shadow-sm {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light-theme .dropdown-menu {
+    background-color: #ffffff;
+    border-color: #e5e7eb;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+html.light-theme .list-group-item {
+    background-color: #ffffff;
+    border-color: #e5e7eb;
+}
+
+html.light-theme .modal-content {
+    background-color: #ffffff;
+}
+
+html.light-theme pre {
+    background-color: #f3f4f6;
+    border-color: #e5e7eb;
+}
+
+html.light-theme .input-group-text {
+    background-color: #f3f4f6;
+    border-color: #e5e7eb;
+}
+
+/* ============================================
+   SELECTION
+   ============================================ */
+::selection {
+    background-color: rgba(var(--hermod-primary-rgb), 0.3);
+    color: var(--hermod-text);
+}
+
+/* ============================================
+   FOCUS VISIBLE
+   ============================================ */
+:focus-visible {
+    outline: 2px solid var(--hermod-primary);
+    outline-offset: 2px;
+}
+
+/* ============================================
+   UTILITY CLASSES
+   ============================================ */
+.glow {
+    box-shadow: var(--hermod-shadow-glow);
+}
+
+.glow-text {
+    text-shadow: 0 0 10px rgba(var(--hermod-primary-rgb), 0.5);
+}
+
+.border-primary {
+    border-color: var(--hermod-primary) !important;
+}
+
+.border-accent {
+    border-color: var(--hermod-border-accent) !important;
+}
+
+/* Darker border checkbox */
+.darker-border-checkbox.form-check-input {
+    border-color: var(--hermod-border);
+}
+
+/* Message log styling */
+.message-item code {
+    background: transparent;
+    color: var(--hermod-text);
+}
+
+html.light-theme .message-item code {
+    color: #1a1a2e;
+}
+
+/* ============================================
+   PROTOCOL PROGRESS BAR COLORS
+   ============================================ */
+.progress-bar.protocol-zigbee {
+    background-color: var(--hermod-zigbee);
+}
+
+.progress-bar.protocol-wifi {
+    background-color: var(--hermod-wifi);
+}
+
+.progress-bar.protocol-bluetooth {
+    background-color: var(--hermod-bluetooth);
+}
+
+.progress-bar.protocol-lora {
+    background-color: var(--hermod-lora);
+}
+
+.progress-bar.protocol-universal {
+    background-color: var(--hermod-universal);
+}
+
+/* ============================================
+   MODAL HEADER GRADIENT OVERRIDES
+   ============================================ */
+.modal-header.hermod-gradient-1 h5,
+.modal-header.hermod-gradient-2 h5,
+.modal-header.hermod-gradient-3 h5,
+.modal-header.hermod-gradient-4 h5 {
+    color: #000000 !important;
+}
+
+.modal-header.hermod-gradient-1 .btn-close-white,
+.modal-header.hermod-gradient-2 .btn-close-white,
+.modal-header.hermod-gradient-3 .btn-close-white,
+.modal-header.hermod-gradient-4 .btn-close-white {
+    filter: none;
+}
+
+/* ============================================
+   TOPOLOGY PAGE
+   ============================================ */
+#topology-container {
+    background: var(--hermod-bg) !important;
+}
+
+/* ============================================
+   REDACT MODE — for thesis screenshots
+   Toggle via the eye-off icon in NavMenu. Adds body.redact-mode class
+   which blurs every selector below. Pure FE — no data is changed,
+   only visual presentation. user-select disabled so a screenshot
+   showing copy-pasted content can't accidentally leak names.
+   ============================================ */
+body.redact-mode .redact,
+body.redact-mode [data-redact],
+body.redact-mode code,
+body.redact-mode pre,
+body.redact-mode .card-title,
+body.redact-mode .device-name,
+body.redact-mode .device-id,
+body.redact-mode .topic-cell,
+body.redact-mode .friendly-name,
+body.redact-mode .badge.bg-secondary,
+body.redact-mode .text-monospace,
+body.redact-mode .font-monospace,
+body.redact-mode td.fw-medium,
+body.redact-mode .message-topic,
+body.redact-mode .message-payload,
+body.redact-mode .rule-source,
+body.redact-mode .rule-target,
+body.redact-mode .topology-label,
+body.redact-mode .breadcrumb-item.active,
+body.redact-mode input[type="text"]:not(.no-redact),
+body.redact-mode textarea:not(.no-redact) {
+    filter: blur(5px);
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: not-allowed;
+    transition: filter 0.15s ease;
+}
+
+/* Hover-reveal so v can still operate the UI; for clean screenshots
+   keep the cursor away from redacted regions or capture full-page. */
+body.redact-mode .redact:hover,
+body.redact-mode [data-redact]:hover,
+body.redact-mode code:hover,
+body.redact-mode pre:hover,
+body.redact-mode .card-title:hover,
+body.redact-mode td.fw-medium:hover {
+    filter: blur(0);
+}
+
+/* The toggle button itself never gets blurred. */
+body.redact-mode .theme-toggle,
+body.redact-mode .redact-toggle,
+body.redact-mode .redact-toggle * {
+    filter: none !important;
+}

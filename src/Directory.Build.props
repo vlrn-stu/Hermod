@@ -1,0 +1,78 @@
+<Project>
+
+  <!--
+    Repo-wide build tightening. Any .csproj below this directory picks
+    these up automatically. Project-local overrides still take precedence.
+    - AnalysisLevel latest + AnalysisMode All turns on every rule Roslyn
+      ships with for the current SDK. Surfaces real bugs early.
+    - GenerateDocumentationFile=true makes CS1591 fire on every missing
+      XML doc on a public API, so gaps are visible.
+    - EnforceCodeStyleInBuild promotes IDExxxx editorconfig violations
+      to build warnings instead of IDE-only squigglies.
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>All</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    Suppressed rules (deliberately, with reasons). Anything that survives
+    is still worth looking at. One rule per NoWarn entry so git blame is
+    readable; grouped into logical sections.
+
+    HOST PIPELINE (all our libraries are consumed by an ASP.NET Core host
+    where no SynchronizationContext is in play at runtime):
+      CA2007 — ConfigureAwait(false) at every await site. Not useful under
+               ASP.NET Core; noisy under Task-heavy code paths.
+    LOGGING PERFORMANCE (source-generated LoggerMessage is a perf tax we
+    don't pay until profiling says we should):
+      CA1848 — Use LoggerMessage source generators. Defer until a hot
+               path justifies the ceremony.
+      CA1873 — Avoid potentially expensive logger message evaluation.
+               Same rationale: addressed where the profiler points.
+    CONFIGURATION POCOS (bound by IOptions<T>, need public setters so the
+    binder can populate them):
+      CA2227 — Collection properties should be read-only.
+      CA1002 — Do not expose generic lists.
+    CSHARP CLEANUP NOISE (bulk-suppressed; we maintain style in editor):
+      CA1805 — Do not initialize unnecessarily.
+      CA1515 — Internal types should be sealed. Test projects break.
+      CA1812 — Avoid uninstantiated internal classes. Record types
+               instantiated via reflection/Dapper trip this.
+      CA1822 — Member can be marked static. Often wrong for Blazor.
+      CA1849 — Async call in async method. Over-reports on NpgsqlCommand.
+      CA1860 — Prefer Count/Length property. Low-value micro-hint.
+      CA1861 — Constant arrays in attributes. Cosmetic.
+      CA1721 — Property name conflicts with Get method.
+      CA2227 is already listed above; left here for future reference.
+    RANDOMNESS:
+      CA5394 — Do not use insecure randomness. Synthetic load-gen /
+               shuffling / test data paths use System.Random by design.
+    PUBLIC API SHAPE (we can't change these without breaking callers):
+      CA1003 — Use EventHandler<T>. Existing EventHandler<Payload> events
+               are wired across the codebase; migration = breaking change.
+      CA1034 — Nested types should not be visible. Zigbee2MqttTopics.Bridge
+               / Request etc. are namespace-like string constant
+               containers; unnesting would rename public types.
+      CA1054 — URI params should be System.Uri. Config POCOs bind from
+               string; keeping string matches JSON + IOptions semantics.
+      CA1056 — URI properties should be System.Uri. Same rationale as
+               CA1054.
+      CA1716 — Param names clash with VB/F# reserved words (template,
+               error, property, on). Renaming breaks interface contracts.
+      CA1819 — Arrays as properties. DTOs use arrays because System.Text
+               .Json binds them directly; migrating = breaking change.
+    STYLE (IDExxxx editorconfig rules that fire loud on idiomatic code):
+      IDE0011 — Add braces (we allow one-line if returns).
+      IDE0046 — Use conditional expression for return.
+      IDE0160 — Convert to file-scoped namespace.
+      IDE0058 — Expression value is never used.
+  -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CA2007;CA1848;CA1873;CA2227;CA1002;CA1805;CA1515;CA1812;CA1822;CA1849;CA1860;CA1861;CA1721;CA5394;CA1003;CA1034;CA1054;CA1056;CA1716;CA1819;IDE0011;IDE0046;IDE0160;IDE0058</NoWarn>
+  </PropertyGroup>
+
+</Project>

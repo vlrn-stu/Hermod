@@ -1,0 +1,959 @@
+@page "/settings"
+@using Hermod.Core.Configuration
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Hermod.Coordinator.Controllers
+@using Hermod.Coordinator.Services
+@inject IRateLimitOverridesStore RateLimitOverrides
+@inject IProtocolFlowOverridesStore ProtocolFlowOverrides
+@inject IOptionsMonitor<HermodSettings> RateLimitSettingsMonitor
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.Extensions.Options
+@using System.Net.Http.Headers
+@using System.Net.Http.Json
+@attribute [Authorize]
+@inject IOptions<HermodSettings> AppSettings
+@inject IMqttService MqttService
+@inject IStatsService StatsService
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ILogger<Settings> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Settings - Hermod</PageTitle>
+
+<h1>Settings</h1>
+<p class="text-muted">System configuration and account settings</p>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>MQTT Connection</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tbody>
+                        <tr>
+                            <td><strong>Broker Host</strong></td>
+                            <td>@AppSettings.Value.Mqtt.Host</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Port</strong></td>
+                            <td>@AppSettings.Value.Mqtt.Port</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Client ID</strong></td>
+                            <td>@AppSettings.Value.Mqtt.ClientId</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Status</strong></td>
+                            <td>
+                                @if (MqttService.IsConnected)
+                                {
+                                    <span class="badge bg-success">Connected</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-danger">Disconnected</span>
+                                }
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                @if (!string.IsNullOrEmpty(_mqttMessage))
+                {
+                    <div class="alert @(_mqttSuccess ? "alert-success" : "alert-danger") py-2">@_mqttMessage</div>
+                }
+                <button class="btn btn-outline-primary btn-sm" @onclick="ReconnectMqtt" disabled="@_isReconnecting">
+                    @if (_isReconnecting)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                    }
+                    Reconnect
+                </button>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Database</h5>
+            </div>
+            <div class="card-body">
+                <div class="db-conn mb-3">
+                    @foreach (var kv in ParseConnectionString(ConnectionStringMasker.Mask(AppSettings.Value.Database.ConnectionString)))
+                    {
+                        <div class="db-conn-row">
+                            <span class="db-conn-key">@kv.Key</span>
+                            <code class="db-conn-val">@kv.Value</code>
+                        </div>
+                    }
+                </div>
+                <a href="/backup" class="btn btn-outline-secondary btn-sm">Backup &amp; Restore</a>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Counters</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    Zeros every lifetime counter shown on Home (Rules Executed,
+                    Dropped Messages, Action Errors, Rule Errors) in memory
+                    AND in the persisted <code>metrics_counters</code> table,
+                    so a coordinator restart won't re-seed the pre-reset
+                    totals. Windowed throughput (1m/5m/1h) stays until the
+                    snapshot window rolls off.
+                </p>
+                @if (!string.IsNullOrEmpty(_countersMessage))
+                {
+                    <div class="alert @(_countersSuccess ? "alert-success" : "alert-danger") py-2">@_countersMessage</div>
+                }
+                <button class="btn btn-outline-danger btn-sm" @onclick="ResetCountersAsync" disabled="@_isResettingCounters">
+                    @if (_isResettingCounters)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                    }
+                    Reset counters
+                </button>
+            </div>
+        </div>
+
+        <style>
+            .db-conn { display: grid; gap: 0.35rem; }
+            .db-conn-row {
+                display: grid;
+                grid-template-columns: 8rem minmax(0, 1fr);
+                align-items: baseline;
+                gap: 0.75rem;
+            }
+            .db-conn-key {
+                font-weight: 600;
+                color: var(--bs-secondary-color, #6c757d);
+                font-size: 0.875rem;
+            }
+            .db-conn-val {
+                overflow-wrap: anywhere;
+                word-break: break-all;
+                white-space: normal;
+                display: block;
+                padding: 0.15rem 0.4rem;
+                border-radius: 0.25rem;
+            }
+        </style>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Change Password</h5>
+            </div>
+            <div class="card-body">
+                @if (!string.IsNullOrEmpty(_passwordMessage))
+                {
+                    <div class="alert @(_passwordSuccess ? "alert-success" : "alert-danger")">@_passwordMessage</div>
+                }
+
+                <EditForm Model="_passwordRequest" OnValidSubmit="HandleChangePassword">
+                    <div class="mb-3">
+                        <label class="form-label">Current Password</label>
+                        <InputText @bind-Value="_passwordRequest.CurrentPassword" type="password" class="form-control" autocomplete="current-password" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">New Password</label>
+                        <InputText @bind-Value="_passwordRequest.NewPassword" type="password" class="form-control" autocomplete="new-password" />
+                        <small class="text-muted">Minimum @MinimumPasswordLength characters</small>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Confirm New Password</label>
+                        <InputText @bind-Value="_passwordRequest.ConfirmPassword" type="password" class="form-control" autocomplete="new-password" />
+                    </div>
+                    <button type="submit" class="btn btn-primary" disabled="@_isChangingPassword">
+                        @if (_isChangingPassword)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1"></span>
+                        }
+                        Change Password
+                    </button>
+                </EditForm>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Session</h5>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">Logged in as: <strong>@_currentUser</strong></p>
+                <button class="btn btn-outline-danger" @onclick="Logout">Logout</button>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Protocol Integrations</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>ZigBee2MQTT</strong>
+                            <div class="text-muted small">@(string.IsNullOrEmpty(AppSettings.Value.ProtocolTranslators.Zigbee2Mqtt.Url) ? "Not configured" : AppSettings.Value.ProtocolTranslators.Zigbee2Mqtt.Url)</div>
+                        </div>
+                        <a href="/zigbee" class="btn btn-sm btn-outline-success">Open</a>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>LoRa2MQTT</strong>
+                            <div class="text-muted small">@(string.IsNullOrEmpty(AppSettings.Value.ProtocolTranslators.Lora2Mqtt.Url) ? "Not configured" : AppSettings.Value.ProtocolTranslators.Lora2Mqtt.Url)</div>
+                        </div>
+                        <a href="/lora" class="btn btn-sm btn-outline-warning">Open</a>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>BLE2MQTT</strong>
+                            <div class="text-muted small">@(string.IsNullOrEmpty(AppSettings.Value.ProtocolTranslators.Ble2Mqtt.Url) ? "Not configured" : AppSettings.Value.ProtocolTranslators.Ble2Mqtt.Url)</div>
+                        </div>
+                        <a href="/bluetooth" class="btn btn-sm btn-outline-info">Open</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h5>System</h5>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>System Health</strong>
+                            <div class="text-muted small">View real-time system status and diagnostics</div>
+                        </div>
+                        <a href="/health" class="btn btn-sm btn-outline-primary">View</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-2" hidden="@(_rateLimits is null && !_rateLimitsLoaded)">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Per-Topic Ingress Rate Limits</h5>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ReloadRateLimitsAsync" disabled="@_rateLimitsLoading">Reload</button>
+            </div>
+            <div class="card-body">
+                @if (_rateLimits is not null)
+                {
+                    <p class="text-muted small">
+                        Rate limit:
+                        <span class="badge @(_rateLimits.Enabled ? "bg-success" : "bg-secondary")">@(_rateLimits.Enabled ? "enabled" : "disabled")</span>
+                        Dedup:
+                        <span class="badge @(_rateLimits.DedupEnabled ? "bg-success" : "bg-secondary")">@(_rateLimits.DedupEnabled ? "enabled" : "disabled")</span>
+                        — defaults: @_rateLimits.DefaultRatePerSecond.ToString("0.##") msg/s sustained,
+                        burst @_rateLimits.DefaultBurst, dedup window @_rateLimits.DedupWindowSeconds s.
+                        Runtime overrides reset on coordinator restart.
+                    </p>
+
+                    <h6 class="mt-3">Static overrides (configuration)</h6>
+                    @if (_rateLimits.StaticOverrides.Count > 0)
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead><tr><th>Topic</th><th>Rate (msg/s)</th><th>Burst</th><th>Dedup (s)</th></tr></thead>
+                                <tbody>
+                                @foreach (var kv in _rateLimits.StaticOverrides)
+                                {
+                                    <tr>
+                                        <td><code>@kv.Key</code></td>
+                                        <td>@FormatRate(kv.Value.RatePerSecond)</td>
+                                        <td>@FormatInt(kv.Value.Burst)</td>
+                                        <td>@FormatDedup(kv.Value.DedupWindowSeconds)</td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-muted small mb-0">No static overrides configured.</p>
+                    }
+
+                    <h6 class="mt-3">Runtime overrides</h6>
+                    @if (_rateLimits.RuntimeOverrides.Count > 0)
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead><tr><th>Topic</th><th>Rate (msg/s)</th><th>Burst</th><th>Dedup (s)</th><th></th></tr></thead>
+                                <tbody>
+                                @foreach (var kv in _rateLimits.RuntimeOverrides)
+                                {
+                                    var topic = kv.Key;
+                                    var view = kv.Value;
+                                    <tr>
+                                        <td><code>@topic</code></td>
+                                        <td>@FormatRate(view.RatePerSecond)</td>
+                                        <td>@FormatInt(view.Burst)</td>
+                                        <td>@FormatDedup(view.DedupWindowSeconds)</td>
+                                        <td class="text-end">
+                                            <button class="btn btn-sm btn-outline-secondary me-1" @onclick="() => StartEditRuntimeOverride(topic, view)">Edit</button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteRuntimeOverrideAsync(topic)">Remove</button>
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-muted small">No runtime overrides installed.</p>
+                    }
+
+                    <h6 class="mt-3">Add or update an override</h6>
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label small">Topic (or <code>prefix/#</code> for whole subtree)</label>
+                            <input class="form-control form-control-sm" placeholder="e.g. bluetooth/# or lora/sensor-1" @bind="_newTopic" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Rate (msg/s)</label>
+                            <input class="form-control form-control-sm" type="number" step="0.1" min="0" @bind="_newRate" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Burst</label>
+                            <input class="form-control form-control-sm" type="number" min="0" @bind="_newBurst" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Dedup (s)</label>
+                            <input class="form-control form-control-sm" type="number" min="-1" @bind="_newDedup" />
+                        </div>
+                        <div class="col-md-2">
+                            <button class="btn btn-primary btn-sm w-100" @onclick="UpsertRuntimeOverrideAsync" disabled="@(string.IsNullOrWhiteSpace(_newTopic) || _rateLimitsLoading)">Save</button>
+                        </div>
+                    </div>
+                    <div class="form-text">Leave a numeric field at zero (or dedup at minus one) to keep the default for that knob.</div>
+                }
+
+                @if (!string.IsNullOrEmpty(_rateLimitMessage))
+                {
+                    <div class="alert @(_rateLimitSuccess ? "alert-success" : "alert-danger") py-2 mt-3 mb-0">@_rateLimitMessage</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-2" hidden="@(_protocolFlow is null && !_protocolFlowLoaded)">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Per-Protocol Flow Limits (ingress + egress)</h5>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ReloadProtocolFlowAsync" disabled="@_protocolFlowLoading">Reload</button>
+            </div>
+            <div class="card-body">
+                @if (_protocolFlow is not null)
+                {
+                    <p class="text-muted small">
+                        Master switch:
+                        <span class="badge @(_protocolFlow.Enabled ? "bg-success" : "bg-secondary")">@(_protocolFlow.Enabled ? "enabled" : "disabled")</span>
+                        — caps total inbound and outbound traffic per protocol family. A zero on a direction means "no limit" for that direction.
+                        Lifetime drops: <strong>@_protocolFlow.IngressDropped</strong> ingress, <strong>@_protocolFlow.EgressDropped</strong> egress. Runtime overrides reset on coordinator restart.
+                    </p>
+
+                    <h6 class="mt-3">Static limits (configuration)</h6>
+                    @if (_protocolFlow.StaticLimits.Count > 0)
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead><tr><th>Protocol</th><th>Ingress rate</th><th>Ingress burst</th><th>Egress rate</th><th>Egress burst</th></tr></thead>
+                                <tbody>
+                                @foreach (var kv in _protocolFlow.StaticLimits)
+                                {
+                                    <tr>
+                                        <td><code>@kv.Key</code></td>
+                                        <td>@FormatFlow(kv.Value.IngressRatePerSecond)</td>
+                                        <td>@FormatFlowInt(kv.Value.IngressBurst)</td>
+                                        <td>@FormatFlow(kv.Value.EgressRatePerSecond)</td>
+                                        <td>@FormatFlowInt(kv.Value.EgressBurst)</td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-muted small mb-0">No static per-protocol limits configured.</p>
+                    }
+
+                    <h6 class="mt-3">Runtime overrides</h6>
+                    @if (_protocolFlow.RuntimeLimits.Count > 0)
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle">
+                                <thead><tr><th>Protocol</th><th>Ingress rate</th><th>Ingress burst</th><th>Egress rate</th><th>Egress burst</th><th></th></tr></thead>
+                                <tbody>
+                                @foreach (var kv in _protocolFlow.RuntimeLimits)
+                                {
+                                    var p = kv.Key;
+                                    var v = kv.Value;
+                                    <tr>
+                                        <td><code>@p</code></td>
+                                        <td>@FormatFlow(v.IngressRatePerSecond)</td>
+                                        <td>@FormatFlowInt(v.IngressBurst)</td>
+                                        <td>@FormatFlow(v.EgressRatePerSecond)</td>
+                                        <td>@FormatFlowInt(v.EgressBurst)</td>
+                                        <td class="text-end">
+                                            <button class="btn btn-sm btn-outline-secondary me-1" @onclick="() => StartEditProtocolFlow(p, v)">Edit</button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteProtocolFlowAsync(p)">Remove</button>
+                                        </td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-muted small">No runtime protocol overrides installed.</p>
+                    }
+
+                    <h6 class="mt-3">Add or update a protocol limit</h6>
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-2">
+                            <label class="form-label small">Protocol</label>
+                            <select class="form-select form-select-sm" @bind="_newProtocol">
+                                <option value="@Protocol.Zigbee">Zigbee</option>
+                                <option value="@Protocol.Lora">LoRa</option>
+                                <option value="@Protocol.Bluetooth">Bluetooth</option>
+                                <option value="@Protocol.Wifi">WiFi</option>
+                                <option value="@Protocol.Unknown">Universal</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Ingress rate (msg/s)</label>
+                            <input class="form-control form-control-sm" type="number" step="0.1" min="0" @bind="_newIngressRate" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Ingress burst</label>
+                            <input class="form-control form-control-sm" type="number" min="0" @bind="_newIngressBurst" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Egress rate (msg/s)</label>
+                            <input class="form-control form-control-sm" type="number" step="0.1" min="0" @bind="_newEgressRate" />
+                        </div>
+                        <div class="col-md-1">
+                            <label class="form-label small">Egress burst</label>
+                            <input class="form-control form-control-sm" type="number" min="0" @bind="_newEgressBurst" />
+                        </div>
+                        <div class="col-md-3">
+                            <button class="btn btn-primary btn-sm w-100" @onclick="UpsertProtocolFlowAsync" disabled="@_protocolFlowLoading">Save</button>
+                        </div>
+                    </div>
+                    <div class="form-text">A zero on a direction disables limiting for that direction; the bucket simply isn't created.</div>
+                }
+
+                @if (!string.IsNullOrEmpty(_protocolFlowMessage))
+                {
+                    <div class="alert @(_protocolFlowSuccess ? "alert-success" : "alert-danger") py-2 mt-3 mb-0">@_protocolFlowMessage</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private RateLimitView? _rateLimits;
+    private bool _rateLimitsLoading;
+    private bool _rateLimitsLoaded;
+    private string? _rateLimitMessage;
+    private bool _rateLimitSuccess;
+    private string _newTopic = string.Empty;
+    private double _newRate;
+    private int _newBurst;
+    private int _newDedup = -1;
+
+    private ProtocolFlowView? _protocolFlow;
+    private bool _protocolFlowLoading;
+    private bool _protocolFlowLoaded;
+    private string? _protocolFlowMessage;
+    private bool _protocolFlowSuccess;
+    private Protocol _newProtocol = Protocol.Zigbee;
+    private double _newIngressRate;
+    private int _newIngressBurst;
+    private double _newEgressRate;
+    private int _newEgressBurst;
+
+    private const int MinimumPasswordLength = 15;
+
+    // Breaks a Npgsql connection string into ordered (key, value) pairs
+    // for the Database card. Tolerates trailing semicolons, surrounding
+    // whitespace, and values that themselves contain an '=' (password
+    // base64 etc.). Returns empty on null/empty input.
+    private static IEnumerable<KeyValuePair<string, string>> ParseConnectionString(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) yield break;
+        foreach (var segment in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var eq = segment.IndexOf('=');
+            if (eq <= 0) continue;
+            var key = segment[..eq].Trim();
+            var value = segment[(eq + 1)..].Trim();
+            if (!string.IsNullOrEmpty(key))
+                yield return new KeyValuePair<string, string>(key, value);
+        }
+    }
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private PasswordChangeRequest _passwordRequest = new();
+    private bool _isReconnecting;
+    private bool _isChangingPassword;
+    private bool _isResettingCounters;
+    private string? _passwordMessage;
+    private bool _passwordSuccess;
+    private string? _mqttMessage;
+    private bool _mqttSuccess;
+    private string? _countersMessage;
+    private bool _countersSuccess;
+    private string _currentUser = "unknown";
+    private bool _initialized;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated == true)
+        {
+            // Prefer human-readable claims first — Identity.Name falls back
+            // to the "sub" UUID claim we set as the name type in
+            // Vault42AuthStateProvider, which displays as "41eb..." gibberish.
+            _currentUser = authState.User.FindFirst("email")?.Value
+                ?? authState.User.FindFirst("preferred_username")?.Value
+                ?? authState.User.FindFirst("name")?.Value
+                ?? authState.User.Identity.Name
+                ?? "authenticated user";
+        }
+    }
+
+    private Task ReloadRateLimitsAsync()
+    {
+        _rateLimitsLoading = true;
+        _rateLimitMessage = null;
+        try
+        {
+            // Direct DI access — Settings.razor runs server-side, so we
+            // skip the HTTP round-trip (which wouldn't carry the user's
+            // cookie anyway) and read straight from the singleton store
+            // and the bound IOptionsMonitor.
+            var cfg = RateLimitSettingsMonitor.CurrentValue.RateLimit;
+            _rateLimits = new RateLimitView(
+                Enabled: cfg.Enabled,
+                DedupEnabled: cfg.DedupEnabled,
+                DefaultRatePerSecond: cfg.DefaultRatePerSecond,
+                DefaultBurst: cfg.DefaultBurst,
+                DedupWindowSeconds: cfg.DedupWindowSeconds,
+                MaxTrackedKeys: cfg.MaxTrackedKeys,
+                StaticOverrides: cfg.TopicOverrides.ToDictionary(
+                    kv => kv.Key,
+                    kv => new TopicRateOverrideView(kv.Value.RatePerSecond, kv.Value.Burst, kv.Value.DedupWindowSeconds)),
+                RuntimeOverrides: RateLimitOverrides.Snapshot().ToDictionary(
+                    kv => kv.Key,
+                    kv => new TopicRateOverrideView(kv.Value.RatePerSecond, kv.Value.Burst, kv.Value.DedupWindowSeconds)));
+            _rateLimitsLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load topic rate limits");
+        }
+        finally
+        {
+            _rateLimitsLoading = false;
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task UpsertRuntimeOverrideAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newTopic)) return;
+        if (_newRate < 0 || _newBurst < 0)
+        {
+            _rateLimitMessage = "RatePerSecond and Burst must be non-negative.";
+            _rateLimitSuccess = false;
+            return;
+        }
+        try
+        {
+            await RateLimitOverrides.SetAsync(_newTopic.Trim(), new TopicRateOverride
+            {
+                RatePerSecond = _newRate,
+                Burst = _newBurst,
+                DedupWindowSeconds = _newDedup,
+            }, _pageCts.Token);
+            _rateLimitMessage = $"Override saved for {_newTopic.Trim()}.";
+            _rateLimitSuccess = true;
+            _newTopic = string.Empty;
+            _newRate = 0;
+            _newBurst = 0;
+            _newDedup = -1;
+            await ReloadRateLimitsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Rate-limit override upsert failed");
+            _rateLimitMessage = "Save failed.";
+            _rateLimitSuccess = false;
+        }
+    }
+
+    private void StartEditRuntimeOverride(string topic, TopicRateOverrideView view)
+    {
+        _newTopic = topic;
+        _newRate = view.RatePerSecond;
+        _newBurst = view.Burst;
+        _newDedup = view.DedupWindowSeconds;
+        _rateLimitMessage = null;
+    }
+
+    private async Task DeleteRuntimeOverrideAsync(string topic)
+    {
+        try
+        {
+            var removed = await RateLimitOverrides.RemoveAsync(topic, _pageCts.Token);
+            _rateLimitMessage = removed ? $"Override removed for {topic}." : $"No override existed for {topic}.";
+            _rateLimitSuccess = true;
+            await ReloadRateLimitsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Rate-limit override delete failed");
+            _rateLimitMessage = "Remove failed.";
+            _rateLimitSuccess = false;
+        }
+    }
+
+    private static string FormatRate(double v) => v > 0 ? v.ToString("0.##") : "default";
+    private static string FormatInt(int v) => v > 0 ? v.ToString() : "default";
+    private static string FormatDedup(int v) => v < 0 ? "default" : v == 0 ? "off" : v.ToString();
+    private static string FormatFlow(double v) => v > 0 ? v.ToString("0.##") : "off";
+    private static string FormatFlowInt(int v) => v > 0 ? v.ToString() : "off";
+
+    private async Task ReloadProtocolFlowAsync()
+    {
+        _protocolFlowLoading = true;
+        _protocolFlowMessage = null;
+        try
+        {
+            var cfg = RateLimitSettingsMonitor.CurrentValue.RateLimit.ProtocolLimits;
+            var stats = await StatsService.GetCurrentStatsAsync(_pageCts.Token);
+            _protocolFlow = new ProtocolFlowView(
+                Enabled: cfg.Enabled,
+                IngressDropped: stats.ProtocolLimitedIngressTotal,
+                EgressDropped: stats.ProtocolLimitedEgressTotal,
+                StaticLimits: cfg.Limits.ToDictionary(
+                    kv => kv.Key,
+                    kv => new ProtocolFlowOverrideView(kv.Value.IngressRatePerSecond, kv.Value.IngressBurst, kv.Value.EgressRatePerSecond, kv.Value.EgressBurst)),
+                RuntimeLimits: ProtocolFlowOverrides.Snapshot().ToDictionary(
+                    kv => kv.Key,
+                    kv => new ProtocolFlowOverrideView(kv.Value.IngressRatePerSecond, kv.Value.IngressBurst, kv.Value.EgressRatePerSecond, kv.Value.EgressBurst)));
+            _protocolFlowLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load per-protocol flow limits");
+        }
+        finally
+        {
+            _protocolFlowLoading = false;
+        }
+    }
+
+    private void StartEditProtocolFlow(Protocol protocol, ProtocolFlowOverrideView view)
+    {
+        _newProtocol = protocol;
+        _newIngressRate = view.IngressRatePerSecond;
+        _newIngressBurst = view.IngressBurst;
+        _newEgressRate = view.EgressRatePerSecond;
+        _newEgressBurst = view.EgressBurst;
+        _protocolFlowMessage = null;
+    }
+
+    private async Task UpsertProtocolFlowAsync()
+    {
+        if (_newIngressRate < 0 || _newIngressBurst < 0 || _newEgressRate < 0 || _newEgressBurst < 0)
+        {
+            _protocolFlowMessage = "Rates and bursts must be non-negative.";
+            _protocolFlowSuccess = false;
+            return;
+        }
+        try
+        {
+            await ProtocolFlowOverrides.SetAsync(_newProtocol, new ProtocolFlowOverride
+            {
+                IngressRatePerSecond = _newIngressRate,
+                IngressBurst = _newIngressBurst,
+                EgressRatePerSecond = _newEgressRate,
+                EgressBurst = _newEgressBurst,
+            }, _pageCts.Token);
+            _protocolFlowMessage = $"Limit saved for {_newProtocol}.";
+            _protocolFlowSuccess = true;
+            _newIngressRate = 0;
+            _newIngressBurst = 0;
+            _newEgressRate = 0;
+            _newEgressBurst = 0;
+            await ReloadProtocolFlowAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Protocol flow override upsert failed");
+            _protocolFlowMessage = "Save failed.";
+            _protocolFlowSuccess = false;
+        }
+    }
+
+    private async Task DeleteProtocolFlowAsync(Protocol protocol)
+    {
+        try
+        {
+            var removed = await ProtocolFlowOverrides.RemoveAsync(protocol, _pageCts.Token);
+            _protocolFlowMessage = removed ? $"Override removed for {protocol}." : $"No runtime override existed for {protocol}.";
+            _protocolFlowSuccess = true;
+            await ReloadProtocolFlowAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Protocol flow override delete failed");
+            _protocolFlowMessage = "Remove failed.";
+            _protocolFlowSuccess = false;
+        }
+    }
+
+    public sealed record ProtocolFlowView(
+        bool Enabled,
+        long IngressDropped,
+        long EgressDropped,
+        IReadOnlyDictionary<string, ProtocolFlowOverrideView> StaticLimits,
+        IReadOnlyDictionary<Protocol, ProtocolFlowOverrideView> RuntimeLimits);
+
+    public sealed record ProtocolFlowOverrideView(
+        double IngressRatePerSecond,
+        int IngressBurst,
+        double EgressRatePerSecond,
+        int EgressBurst);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _initialized) return;
+        _initialized = true;
+
+        // Load the rate-limit config interactively so SSR prerender
+        // doesn't block the page on an HttpClient round-trip. The API
+        // guards writes behind the operator policy; viewer-tier callers
+        // get 401 here and the outer row stays `hidden`.
+        await ReloadRateLimitsAsync();
+        await ReloadProtocolFlowAsync();
+        StateHasChanged();
+    }
+
+    private async Task ResetCountersAsync()
+    {
+        _isResettingCounters = true;
+        _countersMessage = null;
+        try
+        {
+            // Confirm before wiping lifetime counters — they're immutable
+            // evidence for the matrix's "what happened between two
+            // restarts" debugging, so a stray click on a shared screen
+            // shouldn't silently drop them.
+            var confirmed = await JS.InvokeAsync<bool>("confirm",
+                "Zero every lifetime counter (Rules Executed / Dropped / Action Errors)? " +
+                "This hits the DB and cannot be undone.");
+            if (!confirmed)
+            {
+                return;
+            }
+
+            await StatsService.ResetCountersAsync(_pageCts.Token);
+            _countersMessage = "Counters zeroed.";
+            _countersSuccess = true;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _countersMessage = $"Reset failed: {ex.Message}";
+            _countersSuccess = false;
+            Logger.LogError(ex, "Counter reset threw");
+        }
+        finally
+        {
+            _isResettingCounters = false;
+        }
+    }
+
+    private async Task ReconnectMqtt()
+    {
+        _isReconnecting = true;
+        _mqttMessage = null;
+        try
+        {
+            // Admin-only gate: Reconnect triggers DisconnectAsync on the
+            // shared singleton, dropping MQTT for every session. Without
+            // this check any authenticated user would have a DoS handle on
+            // the entire coordinator.
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            if (authState.User.IsInRole("admin") != true)
+            {
+                _mqttMessage = "Reconnect requires the admin role.";
+                _mqttSuccess = false;
+                return;
+            }
+
+            await MqttService.DisconnectAsync(_pageCts.Token);
+            await MqttService.ConnectAsync(_pageCts.Token);
+            _mqttMessage = "Broker reconnected.";
+            _mqttSuccess = true;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to reconnect MQTT broker");
+            _mqttMessage = "Reconnect failed. Check broker logs.";
+            _mqttSuccess = false;
+        }
+        finally
+        {
+            _isReconnecting = false;
+        }
+    }
+
+    private async Task HandleChangePassword()
+    {
+        _isChangingPassword = true;
+        _passwordMessage = null;
+
+        try
+        {
+            if (_passwordRequest.NewPassword != _passwordRequest.ConfirmPassword)
+            {
+                _passwordMessage = "New passwords do not match";
+                _passwordSuccess = false;
+                return;
+            }
+
+            if (_passwordRequest.NewPassword.Length < MinimumPasswordLength)
+            {
+                _passwordMessage = $"Password must be at least {MinimumPasswordLength} characters";
+                _passwordSuccess = false;
+                return;
+            }
+
+            // No bearer header set here — the browser sends the HttpOnly
+            // hermod_token cookie automatically and the cookie→bearer
+            // middleware in Program.cs converts it into a Bearer header
+            // server-side. AuthProxyController.ChangePassword reads the
+            // user from that bearer.
+            var client = HttpClientFactory.CreateClient("LocalApi");
+            client.BaseAddress = new Uri(Navigation.BaseUri);
+
+            var payload = new
+            {
+                current_password = _passwordRequest.CurrentPassword,
+                new_password = _passwordRequest.NewPassword
+            };
+
+            var response = await client.PostAsJsonAsync("/api/auth/change-password", payload, _pageCts.Token);
+            if (response.IsSuccessStatusCode)
+            {
+                _passwordMessage = "Password changed successfully";
+                _passwordSuccess = true;
+                _passwordRequest = new PasswordChangeRequest();
+            }
+            else
+            {
+                var error = await response.Content.ReadFromJsonAsync<VaultErrorResponse>(cancellationToken: _pageCts.Token);
+                _passwordMessage = error?.Error ?? "Failed to change password. Check your current password.";
+                _passwordSuccess = false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Password change request failed");
+            _passwordMessage = "Could not reach the authentication service. Retry.";
+            _passwordSuccess = false;
+        }
+        finally
+        {
+            _isChangingPassword = false;
+        }
+    }
+
+    private async Task Logout()
+    {
+        // Revoke server-side first: the hermod_session cookie is HttpOnly
+        // and JS cannot clear it. Without this call /api/auth/refresh would
+        // happily mint a new access token on the next page load using the
+        // surviving session, silently re-authenticating the "logged out" user.
+        try
+        {
+            var client = HttpClientFactory.CreateClient("LocalApi");
+            client.BaseAddress = new Uri(Navigation.BaseUri);
+            // Same cookie→bearer translation as ChangePassword above.
+            using var response = await client.PostAsync("/api/auth/logout", content: null, _pageCts.Token);
+            // Success or failure, continue with client cleanup — the server
+            // also clears the cookie on success, and a failed revoke is
+            // still safer than skipping the call entirely.
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Server-side logout call failed");
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.removeItem", "hermod_token");
+            await JS.InvokeVoidAsync("sessionStorage.removeItem", "hermod_token");
+        }
+        catch
+        {
+            // JS interop unavailable; server logout above handled the server side.
+        }
+        Navigation.NavigateTo("/login", forceLoad: true);
+    }
+
+    public void Dispose()
+    {
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private sealed class PasswordChangeRequest
+    {
+        public string CurrentPassword { get; set; } = string.Empty;
+        public string NewPassword { get; set; } = string.Empty;
+        public string ConfirmPassword { get; set; } = string.Empty;
+    }
+
+    private sealed class VaultErrorResponse
+    {
+        public string? Error { get; set; }
+    }
+}

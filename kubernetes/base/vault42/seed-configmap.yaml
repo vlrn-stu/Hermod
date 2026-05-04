@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault42-seed
+  namespace: hermod
+  labels:
+    app: vault42
+    component: authentication
+data:
+  # Template, not a final seed: the render-seed init container in
+  # vault42/deployment.yaml substitutes __*_PASSWORD__ from the Secret
+  # vault42-seed-credentials. Passwords must NEVER live in this ConfigMap
+  # (checked into the repo verbatim).
+  seed.json.tmpl: |
+    {
+      "users": [
+        {
+          "email": "viewer@hermod.local",
+          "password": "__VIEWER_PASSWORD__",
+          "display_name": "viewer",
+          "locale": "en",
+          "email_verified": true,
+          "roles": ["viewer"]
+        },
+        {
+          "email": "user@hermod.local",
+          "password": "__USER_PASSWORD__",
+          "display_name": "user",
+          "locale": "en",
+          "email_verified": true,
+          "roles": ["user"]
+        },
+        {
+          "email": "operator@hermod.local",
+          "password": "__OPERATOR_PASSWORD__",
+          "display_name": "operator",
+          "locale": "en",
+          "email_verified": true,
+          "roles": ["operator"]
+        }
+      ]
+    }

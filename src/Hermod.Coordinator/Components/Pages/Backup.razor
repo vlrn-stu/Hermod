@@ -1,0 +1,371 @@
+@page "/backup"
+@using System.Net.Http.Headers
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject NavigationManager Navigation
+@inject IHttpClientFactory HttpClientFactory
+@inject IJSRuntime JS
+@inject ILogger<Backup> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Backup & Restore - Hermod</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1">Backup &amp; Restore</h1>
+        <p class="text-muted mb-0">Export and import your Hermod configuration (devices + rules)</p>
+    </div>
+    <div>
+        <span class="badge bg-info fs-6">Database Management</span>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Export Configuration</h5>
+            </div>
+            <div class="card-body">
+                <p>Download a JSON backup. Pick a <em>scope</em> below to include only the slice you need.</p>
+
+                <div class="mb-3">
+                    <label class="form-label small fw-semibold">Scope</label>
+                    <select class="form-select" @bind="_selectedScope" disabled="@_isExporting">
+                        <option value="full">Full (devices + rules + lifetime metrics counters)</option>
+                        <option value="devices">Devices only</option>
+                        <option value="rules">Rules only</option>
+                        <option value="settings">Settings snapshot (DB password masked)</option>
+                        <option value="metrics-history">Metrics history (recent snapshots)</option>
+                    </select>
+                    <small class="text-muted">
+                        Settings is export-only (import silently ignores it). Metrics-history is opt-in because the table can be large.
+                    </small>
+                </div>
+
+                @if (_exportInfo is not null)
+                {
+                    <div class="alert alert-info">
+                        <strong>Devices:</strong> @_exportInfo.DeviceCount<br />
+                        <strong>Rules:</strong> @_exportInfo.RuleCount<br />
+                        <strong>Last refreshed:</strong> @_exportInfo.LastModified.ToLocalTime().ToString("g")
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(_exportMessage))
+                {
+                    <div class="alert @(_exportSuccess ? "alert-success" : "alert-danger")">@_exportMessage</div>
+                }
+
+                <div class="d-flex gap-2">
+                    <button class="btn btn-success" @onclick="ExportDatabase" disabled="@_isExporting">
+                        @if (_isExporting)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1"></span>
+                        }
+                        Download Backup
+                    </button>
+                    <button class="btn btn-outline-secondary" @onclick="RefreshExportInfo" disabled="@_isLoadingInfo">
+                        @if (_isLoadingInfo)
+                        {
+                            <span class="spinner-border spinner-border-sm"></span>
+                        }
+                        else
+                        {
+                            <span>Refresh</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">Import Configuration</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <strong>Warning:</strong> Importing a backup upserts the uploaded devices and rules by id.
+                    Existing entries with matching ids are overwritten; entries not in the backup are left alone.
+                </div>
+
+                @if (!string.IsNullOrEmpty(_importMessage))
+                {
+                    <div class="alert @(_importSuccess ? "alert-success" : "alert-danger")">@_importMessage</div>
+                }
+
+                <div class="mb-3">
+                    <label class="form-label">Select Backup File</label>
+                    <InputFile OnChange="HandleFileSelected" class="form-control" accept=".json" />
+                    <small class="text-muted">Only <code>.json</code> backups produced by this page are accepted.</small>
+                </div>
+
+                @if (_selectedFile is not null)
+                {
+                    <div class="alert alert-secondary">
+                        <strong>Selected:</strong> @_selectedFile.Name<br />
+                        <strong>Size:</strong> @FormatFileSize(_selectedFile.Size)
+                    </div>
+                }
+
+                <button class="btn btn-warning" @onclick="ImportDatabase" disabled="@(_isImporting || _selectedFile is null)">
+                    @if (_isImporting)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                    }
+                    Import Backup
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5>Backup Information</h5>
+            </div>
+            <div class="card-body">
+                <ul>
+                    <li><strong>What's included:</strong> every row of the <code>devices</code> and <code>rules</code> tables.</li>
+                    <li><strong>What's NOT included:</strong> MQTT broker settings, Vault42 users, metrics, or system configuration.</li>
+                    <li><strong>Format:</strong> JSON file produced by <code>GET /api/backup/export</code> (admin only).</li>
+                    <li><strong>Import limit:</strong> 100&nbsp;MB per upload (<code>RequestSizeLimit</code> on <code>POST /api/backup/import</code>).</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private readonly CancellationTokenSource _pageCts = new();
+    private HttpClient? _http;
+    private BackupInfo? _exportInfo;
+    private bool _isLoadingInfo;
+    private bool _isExporting;
+    private bool _isImporting;
+    private string? _exportMessage;
+    private string? _importMessage;
+    private bool _exportSuccess;
+    private bool _importSuccess;
+    private IBrowserFile? _selectedFile;
+    private bool _initialized;
+    private string _selectedScope = "full";
+
+    protected override void OnInitialized()
+    {
+        _http = HttpClientFactory.CreateClient();
+        _http.BaseAddress = new Uri(Navigation.BaseUri);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _initialized) return;
+        _initialized = true;
+        await SetAuthHeader();
+        await RefreshExportInfo();
+        StateHasChanged();
+    }
+
+    private Task SetAuthHeader()
+    {
+        // No-op under the cookie auth model: the JWT lives in the HttpOnly
+        // hermod_token cookie that the browser auto-attaches to every
+        // same-origin request, and the coord cookie→bearer middleware
+        // (Program.cs) translates it into an Authorization header before
+        // [Authorize] runs. The previous localStorage probe always read
+        // null (HttpOnly cookies are invisible to JS) and bounced
+        // logged-in users to /login.
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshExportInfo()
+    {
+        _isLoadingInfo = true;
+        try
+        {
+            var response = await _http!.GetAsync("/api/backup/export/info", _pageCts.Token);
+            if (response.IsSuccessStatusCode)
+            {
+                _exportInfo = await response.Content.ReadFromJsonAsync<BackupInfo>(cancellationToken: _pageCts.Token);
+                _exportMessage = null;
+            }
+            else
+            {
+                _exportMessage = $"Export info failed ({(int)response.StatusCode}).";
+                _exportSuccess = false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load backup export info");
+            _exportMessage = "Failed to load backup info. See coordinator logs.";
+            _exportSuccess = false;
+        }
+        finally
+        {
+            _isLoadingInfo = false;
+        }
+    }
+
+    private async Task ExportDatabase()
+    {
+        _isExporting = true;
+        _exportMessage = null;
+
+        try
+        {
+            var response = await _http!.GetAsync($"/api/backup/export?scope={Uri.EscapeDataString(_selectedScope)}", _pageCts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                _exportMessage = $"Export failed ({(int)response.StatusCode}).";
+                _exportSuccess = false;
+                return;
+            }
+
+            var content = await response.Content.ReadAsByteArrayAsync(_pageCts.Token);
+            var fileName = ExtractAttachmentName(response)
+                ?? $"hermod_backup_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json";
+            await TriggerBrowserDownloadAsync(content, fileName);
+
+            _exportMessage = "Backup downloaded successfully.";
+            _exportSuccess = true;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to export backup");
+            _exportMessage = "Export failed. See coordinator logs.";
+            _exportSuccess = false;
+        }
+        finally
+        {
+            _isExporting = false;
+        }
+    }
+
+    private void HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        _selectedFile = e.File;
+        _importMessage = null;
+    }
+
+    private async Task ImportDatabase()
+    {
+        if (_selectedFile is null) return;
+
+        _isImporting = true;
+        _importMessage = null;
+
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            await using var stream = _selectedFile.OpenReadStream(maxAllowedSize: 100L * 1024 * 1024);
+            var streamContent = new StreamContent(stream);
+            streamContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            content.Add(streamContent, "file", _selectedFile.Name);
+
+            var response = await _http!.PostAsync("/api/backup/import", content, _pageCts.Token);
+            if (response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadFromJsonAsync<ImportResult>(cancellationToken: _pageCts.Token);
+                _importMessage = body is null
+                    ? "Backup imported."
+                    : $"Backup imported: {body.DevicesImported} device(s), {body.RulesImported} rule(s) upserted.";
+                _importSuccess = true;
+                await RefreshExportInfo();
+            }
+            else
+            {
+                var error = await TryReadErrorAsync(response);
+                _importMessage = error ?? $"Import failed ({(int)response.StatusCode}).";
+                _importSuccess = false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to import backup");
+            _importMessage = "Import failed. See coordinator logs.";
+            _importSuccess = false;
+        }
+        finally
+        {
+            _isImporting = false;
+            _selectedFile = null;
+        }
+    }
+
+    private async Task<string?> TryReadErrorAsync(HttpResponseMessage response)
+    {
+        try
+        {
+            var payload = await response.Content.ReadFromJsonAsync<ErrorResponse>(cancellationToken: _pageCts.Token);
+            return payload?.Message;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private Task TriggerBrowserDownloadAsync(byte[] content, string fileName) =>
+        JS.InvokeVoidAsync("downloadFile", fileName, Convert.ToBase64String(content)).AsTask();
+
+    private static string? ExtractAttachmentName(HttpResponseMessage response)
+    {
+        var disposition = response.Content.Headers.ContentDisposition;
+        return disposition?.FileNameStar ?? disposition?.FileName?.Trim('"');
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        string[] sizes = ["B", "KB", "MB", "GB"];
+        var order = 0;
+        double size = bytes;
+        while (size >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            size /= 1024;
+        }
+        return $"{size:0.##} {sizes[order]}";
+    }
+
+    public void Dispose()
+    {
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private sealed class BackupInfo
+    {
+        public string FileName { get; set; } = string.Empty;
+        public int DeviceCount { get; set; }
+        public int RuleCount { get; set; }
+        public DateTime LastModified { get; set; }
+    }
+
+    private sealed class ImportResult
+    {
+        public string? Message { get; set; }
+        public int DevicesImported { get; set; }
+        public int RulesImported { get; set; }
+    }
+
+    private sealed class ErrorResponse
+    {
+        public string? Message { get; set; }
+    }
+}

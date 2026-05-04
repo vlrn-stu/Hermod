@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nanomq
+  namespace: hermod
+  labels:
+    app: nanomq
+spec:
+  # ClusterIP only — NanoMQ is internal-only. External Wi-Fi devices
+  # enter through the wifi2mqtt bridge (NodePort); other translators
+  # resolve nanomq.hermod.svc.cluster.local directly.
+  type: ClusterIP
+  ports:
+    - name: mqtt
+      port: 1883
+      targetPort: 1883
+    - name: mqtt-tls
+      port: 8883
+      targetPort: 8883
+    - name: http-api
+      port: 8081
+      targetPort: 8081
+  selector:
+    app: nanomq

@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod
+
+resources:
+  - namespace.yaml
+  # secrets.yaml intentionally excluded — credentials are populated by
+  # lib/ensure-secrets.sh at deploy time so `apply -k` cannot
+  # overwrite real secrets with `CHANGE-THIS-*` placeholders.
+  - nanomq/deployment.yaml
+  - nanomq/service.yaml
+  - nanomq/configmap.yaml
+  - nanomq/pvc.yaml
+  - postgres/statefulset.yaml
+  - hermod/deployment.yaml
+  - hermod/configmap.yaml
+  - hermod/pvc.yaml
+  - hermod/service.yaml
+  - lora2mqtt/deployment.yaml
+  - lora2mqtt/configmap.yaml
+  - zigbee2mqtt/deployment.yaml
+  - zigbee2mqtt/configmap.yaml
+  - zigbee2mqtt/pvc.yaml
+  - ble2mqtt/deployment.yaml
+  - wifi2mqtt/deployment.yaml
+  - wifi2mqtt/configmap.yaml
+  - wifi2mqtt/service.yaml
+  - vault42/deployment.yaml
+  - vault42/configmap.yaml
+  # vault42/secrets.yaml excluded for the same reason as base/secrets.yaml.
+  - vault42/service.yaml
+  - vault42/seed-configmap.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hermod-iot-translator
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+images:
+  - name: emqx/nanomq
+    newTag: 0.21-slim
+  - name: hermod/coordinator
+    newTag: latest
+  - name: lora2mqtt
+    newTag: latest

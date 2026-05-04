@@ -1,0 +1,629 @@
+@page "/lora"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Hermod.Core.Configuration
+@using Microsoft.Extensions.Options
+@using System.Net.Http.Headers
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IOptions<HermodSettings> Settings
+@inject IMqttService MqttService
+@inject IDeviceService DeviceService
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ILogger<Lora> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>LoRa2MQTT - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_errorMessage</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="() => _errorMessage = null">Dismiss</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-warning">LoRa2MQTT</span> Dashboard
+        </h1>
+        <p class="text-muted mb-0">Long Range wireless protocol bridge</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(_bridgeOnline ? "bg-success" : "bg-danger") fs-6 px-3 py-2">
+            Bridge @(_bridgeOnline ? "Online" : "Offline")
+        </span>
+        <span class="badge @(_isMockMode ? "bg-warning text-dark" : "bg-info") fs-6 px-3 py-2">
+            @(_isMockMode ? "Mock Mode" : "Hardware Mode")
+        </span>
+        <button class="btn btn-outline-primary btn-sm" @onclick="RefreshStatus">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 protocol-lora">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">LoRa Devices</h6>
+                <h2 class="mb-0 fw-bold">@_loraDevices.Count</h2>
+                <small class="text-white-50">Registered devices</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages</h6>
+                <h2 class="mb-0 fw-bold">@_messageCount</h2>
+                <small class="text-white-50">This session</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">MQTT</h6>
+                <h2 class="mb-0 fw-bold">@(MqttService.IsConnected ? "Connected" : "Disconnected")</h2>
+                <small class="text-white-50">Broker status</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Auto Simulation</h6>
+                <h2 class="mb-0 fw-bold">@(_autoSimRunning ? "Running" : "Stopped")</h2>
+                <small class="text-white-50">@(_isMockMode ? "Mock control" : "N/A")</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Left Panel: Devices & Control -->
+    <div class="col-lg-7">
+        <!-- Mock Mode Controls -->
+        @if (_isMockMode)
+        {
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0 fw-semibold">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-warning" viewBox="0 0 16 16">
+                            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+                            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319z"/>
+                        </svg>
+                        Mock Mode Controls
+                    </h5>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn @(_autoSimRunning ? "btn-success" : "btn-outline-success")" @onclick="StartAutoSim" disabled="@(!_bridgeOnline || _mockDevices.Count == 0)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
+                            </svg>
+                            Start
+                        </button>
+                        <button class="btn @(!_autoSimRunning ? "btn-danger" : "btn-outline-danger")" @onclick="StopAutoSim" disabled="@(!_bridgeOnline)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M5 3.5h6A1.5 1.5 0 0 1 12.5 5v6a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5z"/>
+                            </svg>
+                            Stop
+                        </button>
+                        <button class="btn btn-outline-warning" @onclick="TriggerAll" disabled="@(!_bridgeOnline || _mockDevices.Count == 0)">
+                            Trigger All
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label small">Device ID</label>
+                            <input type="text" class="form-control form-control-sm" @bind="_newDeviceId" placeholder="e.g., weather_1" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Type</label>
+                            <select class="form-select form-select-sm" @bind="_newDeviceType">
+                                <option value="weather">Weather</option>
+                                <option value="soil">Soil</option>
+                                <option value="meter">Meter</option>
+                                <option value="gps">GPS</option>
+                                <option value="generic">Generic</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Manufacturer</label>
+                            <input type="text" class="form-control form-control-sm" @bind="_newDeviceManufacturer" placeholder="Dragino" />
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <button class="btn btn-warning btn-sm w-100" @onclick="AddMockDevice" disabled="@(!_bridgeOnline || string.IsNullOrWhiteSpace(_newDeviceId))">
+                                Add
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Quick Presets -->
+                    <div class="mt-3">
+                        <label class="form-label small text-muted">Quick Presets</label>
+                        <div class="d-flex flex-wrap gap-1">
+                            <button class="btn btn-outline-info btn-sm" @onclick='() => AddPreset("weather_station", "weather", "Dragino", "LSN50v2")'>Weather</button>
+                            <button class="btn btn-outline-success btn-sm" @onclick='() => AddPreset("soil_sensor", "soil", "Dragino", "LSE01")'>Soil</button>
+                            <button class="btn btn-outline-primary btn-sm" @onclick='() => AddPreset("water_meter", "meter", "Axioma", "W1")'>Meter</button>
+                            <button class="btn btn-outline-warning btn-sm" @onclick='() => AddPreset("gps_tracker", "gps", "RAK", "RAK7200")'>GPS</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- Mock Devices List -->
+        @if (_isMockMode && _mockDevices.Any())
+        {
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0 fw-semibold">Mock Devices (@_mockDevices.Count)</h5>
+                    <button class="btn btn-sm btn-outline-danger" @onclick="ClearMockDevices" disabled="@(!_bridgeOnline)">Clear All</button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 250px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="sticky-top" style="background: var(--hermod-card-bg);">
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Type</th>
+                                    <th>Manufacturer</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var device in _mockDevices)
+                                {
+                                    <tr>
+                                        <td><strong>@device.Id</strong></td>
+                                        <td><span class="badge @GetTypeBadge(device.Type)">@device.Type</span></td>
+                                        <td>@device.Manufacturer @device.Model</td>
+                                        <td>
+                                            <button class="btn btn-sm btn-outline-warning me-1" @onclick="() => TriggerDevice(device.Id)" disabled="@(!_bridgeOnline)">Trigger</button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveMockDevice(device.Id)" disabled="@(!_bridgeOnline)">Remove</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- LoRa Devices from Hermod -->
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-warning" viewBox="0 0 16 16">
+                        <path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/>
+                    </svg>
+                    Registered LoRa Devices
+                </h5>
+            </div>
+            <div class="card-body p-0">
+                @if (_loraDevices.Any())
+                {
+                    <div class="table-responsive" style="max-height: 300px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="sticky-top" style="background: var(--hermod-card-bg);">
+                                <tr>
+                                    <th>Device</th>
+                                    <th>Status</th>
+                                    <th>Last Seen</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var device in _loraDevices)
+                                {
+                                    <tr>
+                                        <td>
+                                            <strong class="device-name">@device.Name</strong>
+                                            <div class="text-muted small">@device.Manufacturer @device.Model</div>
+                                        </td>
+                                        <td>
+                                            <span class="badge @(device.Status == DeviceStatus.Online ? "bg-success" : "bg-secondary")">
+                                                @device.Status
+                                            </span>
+                                        </td>
+                                        <td class="text-muted small">@device.LastSeen.ToLocalTime().ToString("HH:mm:ss")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="text-center text-muted py-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                            <path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/>
+                        </svg>
+                        <p class="mb-1">No LoRa devices registered</p>
+                        <small>Devices will appear when they send messages</small>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Panel: Message Log -->
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm" style="max-height: 700px;">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-warning" viewBox="0 0 16 16">
+                        <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                        <path d="M3 5.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zM3 8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9A.5.5 0 0 1 3 8zm0 2.5a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5z"/>
+                    </svg>
+                    LoRa Messages
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearMessages">Clear</button>
+            </div>
+            <div class="card-body p-0" style="overflow-y: auto; max-height: 600px;">
+                @{ var snapshot = RecentMessagesSnapshot(); }
+                @if (snapshot.Any())
+                {
+                    @foreach (var msg in snapshot.OrderByDescending(m => m.ReceivedAt).Take(50))
+                    {
+                        <div class="border-bottom p-3">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <code class="text-warning small">@msg.Topic</code>
+                                <small class="text-muted">@msg.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</small>
+                            </div>
+                            <pre class="bg-light rounded p-2 mb-0 small" style="max-height: 100px; overflow: auto; white-space: pre-wrap; word-break: break-word;">@FormatJson(msg.Payload)</pre>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="text-center text-muted py-5">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                            <path d="M0 0h1v15h15v1H0V0Zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07Z"/>
+                        </svg>
+                        <p class="mb-1">No LoRa messages yet</p>
+                        <small>Messages will appear here in real-time</small>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private readonly List<MqttMessage> _recentMessages = new();
+    private List<Device> _loraDevices = new();
+    private List<MockDeviceInfo> _mockDevices = new();
+    private Timer? _refreshTimer;
+    private HttpClient? _httpClient;
+
+    private bool _bridgeOnline;
+    private bool _isMockMode;
+    private bool _autoSimRunning;
+    private int _messageCount;
+    private string _loraServiceUrl = "";
+    private string? _errorMessage;
+
+    private string _newDeviceId = "";
+    private string _newDeviceType = "weather";
+    private string _newDeviceManufacturer = "";
+
+    private bool _authHeaderSet;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _loraServiceUrl = Settings.Value.ProtocolTranslators.Lora2Mqtt.Url ?? "";
+        // RefreshStatus runs server-side — Navigation.BaseUri is the
+        // browser-facing URL (e.g. http://localhost:42169 via
+        // kubectl port-forward), which the pod itself cannot dial.
+        // When a translator URL is configured, hit it directly over
+        // cluster DNS; otherwise fall back to the self-proxy path
+        // (unit-test / dev-localhost scenarios).
+        _httpClient = HttpClientFactory.CreateClient();
+        _httpClient.BaseAddress = !string.IsNullOrEmpty(_loraServiceUrl)
+            ? new Uri(_loraServiceUrl.TrimEnd('/') + "/")
+            : new Uri(Navigation.BaseUri.TrimEnd('/') + "/proxy/lora/");
+        _httpClient.Timeout = TimeSpan.FromSeconds(5);
+
+        MqttService.MessageReceived += HandleMessage;
+
+        await LoadLoRaDevices();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        await SetAuthHeader();
+        await RefreshStatus();
+        StateHasChanged();
+
+        _refreshTimer = new Timer(
+            _ => _ = InvokeAsync(async () =>
+            {
+                await RefreshStatus();
+                StateHasChanged();
+            }),
+            state: null,
+            dueTime: RefreshInterval,
+            period: RefreshInterval);
+    }
+
+    private async Task SetAuthHeader()
+    {
+        if (_authHeaderSet) return;
+        try
+        {
+            var token = await JS.InvokeAsync<string>("localStorage.getItem", "hermod_token")
+                        ?? await JS.InvokeAsync<string>("sessionStorage.getItem", "hermod_token");
+
+            if (!string.IsNullOrEmpty(token))
+            {
+                _httpClient!.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+            _authHeaderSet = true;
+        }
+        catch
+        {
+            // JS interop unavailable during prerender; token will attach on the next render.
+        }
+    }
+
+    private void HandleMessage(object? sender, MqttMessage message)
+    {
+        if (!message.Topic.StartsWith("lora/")) return;
+
+        lock (_recentMessages)
+        {
+            _recentMessages.Add(message);
+            _messageCount++;
+            if (_recentMessages.Count > 100)
+                _recentMessages.RemoveAt(0);
+        }
+
+        if (message.Topic == "lora/bridge/state")
+        {
+            // Accept three wire formats: {"state":"online"}, a bare
+            // "online"/"offline" JSON string, or a literal unquoted text
+            // payload. LoRa2MQTT historically published the last form;
+            // without handling all three the pill stuck on "Offline"
+            // even when traffic was arriving.
+            _bridgeOnline = TryParseBridgeStateOnline(message.Payload);
+        }
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    // LoRa2MQTT (and the upstream BLE2MQTT pattern we cloned from)
+    // publishes bridge state in any of three shapes depending on the
+    // broker version and whether the payload was serialised with
+    // pretty-printing. A strict JSON-object parser misses the latter
+    // two and leaves the pill stuck on "Offline".
+    private static bool TryParseBridgeStateOnline(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return false;
+        var trimmed = payload.Trim();
+
+        if (trimmed.StartsWith('{'))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                if (doc.RootElement.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.String)
+                    return string.Equals(s.GetString(), "online", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (JsonException) { }
+            return false;
+        }
+
+        if (trimmed.StartsWith('"') && trimmed.EndsWith('"') && trimmed.Length >= 2)
+            trimmed = trimmed[1..^1];
+
+        return string.Equals(trimmed, "online", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task RefreshStatus()
+    {
+        try
+        {
+            var response = await _httpClient!.GetFromJsonAsync<BridgeStatus>("api/status", _pageCts.Token);
+            if (response is not null)
+            {
+                _bridgeOnline = response.LoRaConnected && response.MqttConnected;
+                _isMockMode = response.Mode == "mock";
+            }
+
+            if (_isMockMode)
+            {
+                var mockStatus = await _httpClient!.GetFromJsonAsync<MockStatus>("api/mock/status", _pageCts.Token);
+                if (mockStatus is not null) _autoSimRunning = mockStatus.AutoSimulationRunning;
+
+                var devices = await _httpClient!.GetFromJsonAsync<List<MockDeviceInfo>>("api/mock/devices", _pageCts.Token);
+                _mockDevices = devices ?? new List<MockDeviceInfo>();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "LoRa2MQTT status poll failed");
+            _bridgeOnline = false;
+        }
+
+        await LoadLoRaDevices();
+    }
+
+    private IEnumerable<MqttMessage> RecentMessagesSnapshot()
+    {
+        lock (_recentMessages)
+        {
+            return _recentMessages.ToArray();
+        }
+    }
+
+    private async Task LoadLoRaDevices()
+    {
+        try
+        {
+            // LoRa-only: use the protocol-scoped query so we only pull
+            // LoRa device rows across the wire, not all 220k.
+            _loraDevices = (await DeviceService.GetDevicesByProtocolAsync(Protocol.Lora, _pageCts.Token)).ToList();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to load LoRa devices");
+        }
+    }
+
+    private async Task SafeRequestAsync(Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> call, string label)
+    {
+        try
+        {
+            using var response = await call(_httpClient!, _pageCts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                _errorMessage = $"{label} failed ({(int)response.StatusCode}).";
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "LoRa2MQTT request {Label} failed", label);
+            _errorMessage = $"{label} failed. See coordinator logs.";
+        }
+    }
+
+    private async Task AddMockDevice()
+    {
+        if (string.IsNullOrWhiteSpace(_newDeviceId)) return;
+
+        var device = new MockDeviceInfo
+        {
+            Id = _newDeviceId.Trim(),
+            Type = _newDeviceType,
+            Manufacturer = _newDeviceManufacturer,
+            Model = ""
+        };
+
+        await SafeRequestAsync((c, ct) => c.PostAsJsonAsync("api/mock/devices", device, ct), "Add mock device");
+        _newDeviceId = "";
+        _newDeviceManufacturer = "";
+        await RefreshStatus();
+    }
+
+    private async Task AddPreset(string id, string type, string manufacturer, string model)
+    {
+        var device = new MockDeviceInfo { Id = id, Type = type, Manufacturer = manufacturer, Model = model };
+        await SafeRequestAsync((c, ct) => c.PostAsJsonAsync("api/mock/devices", device, ct), "Add preset");
+        await RefreshStatus();
+    }
+
+    private async Task RemoveMockDevice(string id)
+    {
+        var encoded = Uri.EscapeDataString(id);
+        await SafeRequestAsync((c, ct) => c.DeleteAsync($"api/mock/devices/{encoded}", ct), "Remove mock device");
+        await RefreshStatus();
+    }
+
+    private async Task ClearMockDevices()
+    {
+        await SafeRequestAsync((c, ct) => c.DeleteAsync("api/mock/devices", ct), "Clear mock devices");
+        await RefreshStatus();
+    }
+
+    private Task TriggerDevice(string id) =>
+        SafeRequestAsync((c, ct) => c.PostAsync($"api/mock/trigger/{Uri.EscapeDataString(id)}", content: null, ct), "Trigger device");
+
+    private Task TriggerAll() =>
+        SafeRequestAsync((c, ct) => c.PostAsync("api/mock/trigger/all", content: null, ct), "Trigger all");
+
+    private async Task StartAutoSim()
+    {
+        await SafeRequestAsync((c, ct) => c.PostAsync("api/mock/auto/start", content: null, ct), "Start auto simulation");
+        await RefreshStatus();
+    }
+
+    private async Task StopAutoSim()
+    {
+        await SafeRequestAsync((c, ct) => c.PostAsync("api/mock/auto/stop", content: null, ct), "Stop auto simulation");
+        await RefreshStatus();
+    }
+
+    private void ClearMessages()
+    {
+        lock (_recentMessages) { _recentMessages.Clear(); }
+        _messageCount = 0;
+    }
+
+    private static string GetTypeBadge(string type) => type.ToLower() switch
+    {
+        "weather" => "bg-info",
+        "soil" => "bg-success",
+        "meter" => "bg-primary",
+        "gps" => "bg-warning text-dark",
+        _ => "bg-secondary"
+    };
+
+    private static string FormatJson(string payload)
+    {
+        try
+        {
+            var obj = JsonSerializer.Deserialize<object>(payload);
+            return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            return payload;
+        }
+    }
+
+    public void Dispose()
+    {
+        MqttService.MessageReceived -= HandleMessage;
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private sealed class BridgeStatus
+    {
+        public bool LoRaConnected { get; set; }
+        public bool MqttConnected { get; set; }
+        public string Mode { get; set; } = "";
+    }
+
+    private sealed class MockStatus
+    {
+        public bool IsConnected { get; set; }
+        public bool AutoSimulationRunning { get; set; }
+        public int DeviceCount { get; set; }
+        public string Mode { get; set; } = "";
+    }
+
+    private sealed class MockDeviceInfo
+    {
+        public string Id { get; set; } = "";
+        public string Type { get; set; } = "";
+        public string Manufacturer { get; set; } = "";
+        public string Model { get; set; } = "";
+    }
+}

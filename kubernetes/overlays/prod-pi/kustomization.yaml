@@ -1,0 +1,30 @@
+# Pi5 (microk8s) overlay on top of overlays/prod. Flips real hardware
+# back on (LoRa /dev/ttyACM0, Theengs BLE on host BlueZ).
+# Deploy: `hermod.sh install prod-pi`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+resources:
+  - ../prod
+
+patches:
+  - path: pi-lora-real.yaml
+    target:
+      kind: Deployment
+      name: lora2mqtt
+  - path: pi-ble-real.yaml
+    target:
+      kind: Deployment
+      name: ble2mqtt
+  # Only two LAN-published ingresses (matches thesis §7.1 trust boundary):
+  #   * coord https on host :42069
+  #   * wifi2mqtt mosquitto mqtts on host :8883
+  # Internal nanomq stays ClusterIP-only — never exposed externally.
+  - path: pi-coord-nodeport.yaml
+    target:
+      kind: Service
+      name: hermod-coordinator
+  # wifi2mqtt nodePort is set in overlays/prod/kustomization.yaml
+  # (JSON6902 patch with nodePort: 8883) — applies to both kind + Pi.

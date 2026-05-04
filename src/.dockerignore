@@ -1,0 +1,57 @@
+# Keep the build context tight so rebuilds stay fast and images stay
+# small. This file applies to every Dockerfile that uses `src/` as its
+# build context (Hermod.Coordinator, LoRa2MQTT.Service).
+
+# Build output — regenerated inside the builder stage anyway
+**/bin/
+**/obj/
+**/out/
+**/publish/
+**/TestResults/
+**/*.binlog
+
+# Rider / Visual Studio
+**/.vs/
+**/.idea/
+**/*.user
+**/*.suo
+**/*.userprefs
+**/*.DotSettings.user
+
+# VS Code workspace junk (config stays if ever needed, but caches go)
+**/.vscode/.browse.*.db
+**/.history/
+
+# OS junk
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*~
+
+# Git + hooks — never needed inside an image layer
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Scripts meant to run on the host, not inside a build
+scripts/
+
+# Docs / thesis LaTeX — completely unrelated to the image
+docs/
+thesis/
+chapters/
+reviews/
+tex/
+*.pdf
+
+# Local secrets / env files that should never be layered in
+**/appsettings.Local.json
+**/appsettings.*.user.json
+**/.env
+**/.env.*
+**/secrets.json
+
+# Stray logos / marketing assets that aren't referenced by the build
+logo.png
+Hermod.slnx

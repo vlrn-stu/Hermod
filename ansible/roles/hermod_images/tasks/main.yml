@@ -1,0 +1,23 @@
+---
+# hermod_images — dev and prod paths for providing container images to the cluster.
+
+- name: hermod_images | Announce mode
+  ansible.builtin.debug:
+    msg: "Image source mode: {{ hermod_image_source }}"
+  tags: [always]
+
+- name: hermod_images | Run dev path
+  ansible.builtin.include_tasks: dev.yml
+  when: hermod_image_source == "dev"
+  tags: [images, dev]
+
+- name: hermod_images | Run prod path
+  ansible.builtin.include_tasks: prod.yml
+  when: hermod_image_source == "prod"
+  tags: [images, prod]
+
+- name: hermod_images | Reject unknown image source
+  ansible.builtin.fail:
+    msg: "hermod_image_source must be 'dev' or 'prod', got '{{ hermod_image_source }}'"
+  when: hermod_image_source not in ["dev", "prod"]
+  tags: [always]

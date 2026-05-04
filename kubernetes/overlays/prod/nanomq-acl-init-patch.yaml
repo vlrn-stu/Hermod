@@ -1,0 +1,78 @@
+# Strategic-merge patch: layers the ACL render init container, the
+# shared emptyDir, and the nanomq mount of /etc/nanomq/auth on top of
+# the base nanomq Deployment. Pairs with nanomq-acl-init.yaml (the
+# render-script ConfigMap) and templates/nanomq_acl.conf.tmpl (the
+# template configMapGenerator picks up).
+#
+# Coexists with the existing render-config init container that the
+# base ships for nanomq.conf — kustomize merges the initContainers
+# list by name, so both inits run at boot (the existing one renders
+# nanomq.conf, ours renders nanomq_pwd.conf + nanomq_acl.conf).
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nanomq
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: nanomq-acl-render
+          image: busybox:1.36
+          command: ["/bin/sh", "/render/render.sh"]
+          env:
+            - name: COORD_USER
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: coord-username
+            - name: COORD_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: coord-password
+            - name: ZIGBEE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: zigbee2mqtt-password
+            - name: LORA_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: lora2mqtt-password
+            - name: WIFI_BRIDGE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: wifi2mqtt-bridge-password
+            - name: BLE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: ble2mqtt-password
+          volumeMounts:
+            - name: nanomq-acl-shared
+              mountPath: /shared
+            - name: nanomq-acl-template
+              mountPath: /tpl
+              readOnly: true
+            - name: nanomq-acl-render-script
+              mountPath: /render
+              readOnly: true
+      containers:
+        - name: nanomq
+          volumeMounts:
+            - name: nanomq-acl-shared
+              mountPath: /etc/nanomq/auth
+              readOnly: true
+      volumes:
+        - name: nanomq-acl-shared
+          emptyDir: {}
+        - name: nanomq-acl-template
+          configMap:
+            name: nanomq-acl-template
+        - name: nanomq-acl-render-script
+          configMap:
+            name: nanomq-acl-render-script
+            defaultMode: 0o555

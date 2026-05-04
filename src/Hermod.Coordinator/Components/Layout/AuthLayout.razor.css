@@ -1,0 +1,33 @@
+.auth-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    background: var(--hermod-bg);
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-page::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background:
+        radial-gradient(circle at 20% 80%, rgba(0, 255, 65, 0.05) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(0, 255, 65, 0.03) 0%, transparent 50%);
+    pointer-events: none;
+}
+
+:global(html.light-theme) .auth-page {
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+:global(html.light-theme) .auth-page::before {
+    background:
+        radial-gradient(circle at 20% 80%, rgba(0, 200, 51, 0.08) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(0, 200, 51, 0.05) 0%, transparent 50%);
+}

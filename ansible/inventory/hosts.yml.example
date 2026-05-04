@@ -1,0 +1,23 @@
+---
+# Hermod inventory template.
+# Copy this file to hosts.yml and fill in the real values.
+# hosts.yml is listed in .gitignore and should never be committed.
+
+all:
+  vars:
+    # SSH connection
+    ansible_user: hermod
+    # ansible_password: "your-ssh-password"   # only if no SSH key
+    # ansible_become_password: "your-sudo-pw"  # only if sudo requires a password
+
+  children:
+    hermod_nodes:
+      hosts:
+        rpi5:
+          ansible_host: 192.168.1.XXX   # replace with your Pi's IP or hostname
+          # ansible_port: 22
+          # ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+
+      vars:
+        # Override group_vars/all.yml here if desired per-group
+        # hermod_timezone: "Europe/London"

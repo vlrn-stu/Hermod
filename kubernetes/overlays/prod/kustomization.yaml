@@ -1,0 +1,187 @@
+# Hermod prod overlay (kind + Pi5). Ultra-secure deployment per
+# notes/prod-kubernetes-plan.md: HTTPS/mTLS everywhere, deny-by-default
+# auth, ~1.1 GB requests / 3.4 GB limits within a 6.3 GB ceiling.
+#
+# Certs: lib/issue-internal-certs.sh writes ~/.hermod-prod-certs,
+# lib/seed-internal-certs.sh upserts internal-ca + 12 *-tls Secrets
+# into this namespace before `apply -k`.
+#
+# === SELF-SIGNED CA WARNING ===========================================
+# This overlay ships a self-signed internal CA. Pods trust it via the
+# mounted internal-ca.crt bundle, but BROWSERS DO NOT — direct access
+# to https://<node-ip>:42069 raises an "untrusted certificate" warning.
+# That is correct behaviour for a private CA, not a Hermod bug.
+#
+# A real production deploy SHOULD use a publicly-trusted certificate.
+# Five sibling overlays document and gate the path. ALL default to a
+# passive / non-exposing state — going live requires explicitly
+# applying a *-active or *-ingress variant by name.
+#
+#   kubernetes/overlays/prod-pi-letsencrypt/
+#       passive — cert-manager + Certificate, no Ingress, no traffic
+#   kubernetes/overlays/prod-pi-letsencrypt-ingress/
+#       active — adds nginx Ingress, exposes Coord publicly
+#   kubernetes/overlays/prod-pi-letsencrypt-cloudflare-tunnel/
+#       passive — cloudflared Deployment parked at replicas=0
+#   kubernetes/overlays/prod-pi-letsencrypt-cloudflare-tunnel-active/
+#       active — scales cloudflared to 2, opens the tunnel
+#   kubernetes/overlays/prod-pi-cloudflare-zero-trust/
+#       active + Cloudflare Access gate; fail-closed init container
+#       refuses to start until Access AUD/team domain are configured
+#
+# See SECURITY.md §3.5 and each overlay's README for the trade-offs.
+# ======================================================================
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+# namespace.yaml deliberately excluded — seed-internal-certs.sh creates
+# hermod-prod externally so `delete -k` cannot wipe the cert Secrets.
+resources:
+  - ../../base
+  - pg-hba-resources.yaml
+  - networkpolicies.yaml
+  # nanomq-acl-init.yaml: render-script ConfigMap (resource).
+  # nanomq-acl-init-patch.yaml: strategic-merge patch wiring the init
+  # container + shared emptyDir into the nanomq Deployment (added to
+  # patches: below). lib/ensure-secrets.sh populates the
+  # hermod-mqtt-users Secret the init container reads.
+  - nanomq-acl-init.yaml
+
+# Render the ACL template into a ConfigMap kustomize ships alongside
+# the broker. Keeps the template source-controlled and auditable;
+# the init script reads it from /tpl/ at boot.
+configMapGenerator:
+  - name: nanomq-acl-template
+    files:
+      - templates/nanomq_acl.conf.tmpl
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Multi-document strategic-merge patches MUST live in the legacy
+# `patchesStrategicMerge:` field — kustomize v5's new `patches:` field
+# only handles single-document files (it tries to parse multi-doc as a
+# JSON6902 array and dies with "unable to parse SM or JSON patch").
+# microk8s 1.30 ships kustomize v5.0.4, so we hit this on every prod-pi
+# install. Files listed here may contain N>=1 docs; each doc's
+# apiVersion/kind/metadata.name/namespace identifies its own target.
+# Multi-document strategic-merge patches MUST live in the legacy
+# `patchesStrategicMerge:` field — kustomize v5's new `patches:` field
+# only handles single-document files (it tries to parse multi-doc as a
+# JSON6902 array and dies with "unable to parse SM or JSON patch").
+# microk8s 1.30 ships kustomize v5.0.4, so we hit this on every prod-pi
+# install. Files listed here may contain N>=1 docs; each doc's
+# apiVersion/kind/metadata.name/namespace identifies its own target.
+patchesStrategicMerge:
+  - nanomq-prod.yaml
+  - vault42-prod.yaml
+  - wifi2mqtt-prod.yaml
+
+patches:
+  # Hardware passthrough (Pi5 USB or kind extraMounts).
+  - path: zigbee2mqtt-hardware-patch.yaml
+    target:
+      kind: Deployment
+      name: zigbee2mqtt
+  - path: lora2mqtt-hardware-patch.yaml
+    target:
+      kind: Deployment
+      name: lora2mqtt
+
+  # Per-component prod hardening (TLS, mTLS, config, resources).
+  - path: coord-prod.yaml
+    target:
+      kind: Deployment
+      name: hermod-coordinator
+  - path: hermod-config-prod.yaml
+    target:
+      kind: ConfigMap
+      name: hermod-config
+  - path: nanomq-acl-init-patch.yaml
+    target:
+      kind: Deployment
+      name: nanomq
+  - path: postgres-prod.yaml
+    target:
+      kind: StatefulSet
+      name: postgres
+  - path: zigbee2mqtt-prod.yaml
+    target:
+      kind: Deployment
+      name: zigbee2mqtt
+  - path: lora2mqtt-prod.yaml
+    target:
+      kind: Deployment
+      name: lora2mqtt
+
+  # Drop the Namespace from rendered output (seed-internal-certs.sh
+  # owns it externally to keep cert Secrets across `delete -k`).
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: hermod
+    target:
+      kind: Namespace
+      name: hermod
+
+  # Service port surgery via JSON patch — strategic merge can't remove
+  # ports (it merges by port number).
+  - target:
+      kind: Service
+      name: nanomq
+    patch: |-
+      - op: replace
+        path: /spec/ports
+        value:
+          - name: mqtt-tls
+            port: 8883
+            targetPort: 8883
+            protocol: TCP
+          - name: http-api
+            port: 8081
+            targetPort: 8081
+            protocol: TCP
+  - target:
+      kind: Service
+      name: vault42
+    patch: |-
+      - op: replace
+        path: /spec/ports
+        value:
+          - name: https
+            port: 8443
+            targetPort: 8443
+            protocol: TCP
+  - target:
+      kind: Service
+      name: wifi2mqtt
+    patch: |-
+      - op: replace
+        path: /spec/ports
+        value:
+          - name: mqtt-tls
+            port: 8883
+            targetPort: 8883
+            nodePort: 8883
+            protocol: TCP
+
+  # Coord Service: NodePort 32069 from base, now serves HTTPS — no patch.
+
+# Locally-built kind images use bare names; base uses registry-style.
+images:
+  - name: hermod/coordinator
+    newName: hermod-coordinator
+    newTag: latest
+  - name: lora2mqtt
+    newTag: latest
+
+labels:
+  - pairs:
+      environment: prod
+      tier: production
+    includeSelectors: false

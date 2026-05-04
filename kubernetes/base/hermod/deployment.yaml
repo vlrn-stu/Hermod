@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermod-coordinator
+  namespace: hermod
+  labels:
+    app: hermod-coordinator
+    component: application
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): two pods both subscribe to nanomq during
+  # rollout, splitting inbound messages and Prometheus counters. Port-forward
+  # pins one pod, leaving the measurement window reading partial counts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: hermod-coordinator
+  template:
+    metadata:
+      labels:
+        app: hermod-coordinator
+        component: application
+    spec:
+      initContainers:
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for NanoMQ..."
+              until nc -z nanomq.hermod.svc.cluster.local 1883; do
+                echo "NanoMQ not ready, sleeping..."
+                sleep 2
+              done
+              echo "NanoMQ is ready!"
+        - name: wait-for-vault42
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for vault42..."
+              until nc -z vault42.hermod.svc.cluster.local 8080; do
+                echo "vault42 not ready, sleeping..."
+                sleep 2
+              done
+              echo "vault42 is ready!"
+      containers:
+        - name: hermod-coordinator
+          image: hermod/coordinator:latest
+          imagePullPolicy: Never  # Use locally built image
+          ports:
+            - name: http
+              containerPort: 42069
+              protocol: TCP
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+            - name: ASPNETCORE_URLS
+              value: "http://+:42069"
+            # Polling watcher avoids exhausting host inotify instances.
+            - name: DOTNET_USE_POLLING_FILE_WATCHER
+              value: "true"
+            - name: Hermod__Mqtt__Host
+              value: "nanomq.hermod.svc.cluster.local"
+            - name: Hermod__Mqtt__Port
+              value: "1883"
+            - name: Hermod__Mqtt__Username
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-secrets
+                  key: mqtt-username
+            - name: Hermod__Mqtt__Password
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-secrets
+                  key: mqtt-password
+            # ConnectionString carries Host/Port/Database/Username only;
+            # password is merged at factory-build time by
+            # PostgresConnectionFactory to keep it out of the ConfigMap
+            # and out of the Dashboard Settings page.
+            - name: Hermod__Database__ConnectionString
+              value: "Host=postgres.hermod.svc.cluster.local;Port=5432;Database=hermod;Username=hermod_app"
+            - name: Hermod__Database__Password
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-db-credentials
+                  key: hermod-db-password
+            - name: Vault42__Authority
+              value: "http://vault42.hermod.svc.cluster.local:8080"
+          resources:
+            # Pi 5 budget: 2 cores + 1.5Gi so the ingest drain
+            # (Parallelism=4) can actually hit ≥2 cores; prior 1-core
+            # cap saturated at rung 6/7. Leaves 2 cores + ~6.5Gi for
+            # postgres + nanomq + vault42 + translators + Ubuntu.
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "1536Mi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: hermod-config
+              mountPath: /app/appsettings.Production.json
+              subPath: appsettings.Production.json
+            - name: hermod-data
+              mountPath: /app/data
+          # Probe thresholds widened: under load (load_gen 500-1500 msg/s
+          # + postgres batch flushes) /healthz can stall past 10s, kubelet
+          # restarts the container, and counters reset mid-matrix.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 42069
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 30
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 42069
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 15
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 42069
+            failureThreshold: 30
+            periodSeconds: 10
+      volumes:
+        - name: hermod-config
+          configMap:
+            name: hermod-config
+        - name: hermod-data
+          persistentVolumeClaim:
+            claimName: hermod-data

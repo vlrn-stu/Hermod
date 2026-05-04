@@ -1,0 +1,43 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: hermod
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Hermod Coordinator (NodePort 32069 → host 42069)
+      - containerPort: 32069
+        hostPort: 42069
+        protocol: TCP
+      # Zigbee2MQTT dashboard (NodePort 30880 → host 42080)
+      - containerPort: 30880
+        hostPort: 42080
+        protocol: TCP
+      # LoRa2MQTT API (NodePort 30881 → host 42081)
+      - containerPort: 30881
+        hostPort: 42081
+        protocol: TCP
+      # NanoMQ MQTT broker (NodePort 31883 → host 31883). Required for
+      # the load_gen → broker direct path when the matrix harness runs
+      # outside the kind docker network. Without this, the only way to
+      # reach the broker from the host is `kubectl port-forward`, which
+      # tunnels through the kube-apiserver SPDY channel and silently
+      # drops packets at sustained MQTT publish rates above ~500 msg/s.
+      - containerPort: 31883
+        hostPort: 31883
+        protocol: TCP
+    # USB passthrough for the dev-hardware overlay. kind cannot hot-add
+    # devices — adding a dongle later requires `kind delete cluster`
+    # and re-running deploy-kind.sh. Host device map:
+    #   /dev/ttyUSB0  → Sonoff Zigbee 3.0 Plus V2 (ITEAD/CP2102)
+    #   /dev/ttyACM0  → Waveshare LoRa HAT USB (CH340 CDC-ACM, 1a86:55d3)
+    # /dev/serial/by-id is mounted read-only so the (stable) by-id paths
+    # resolve the same way inside the cluster as they do on the host —
+    # useful when a dongle's ttyUSB index shifts on unplug/replug.
+    extraMounts:
+      - hostPath: /dev/serial/by-id
+        containerPath: /dev/serial/by-id
+        readOnly: true
+      - hostPath: /dev/ttyUSB0
+        containerPath: /dev/ttyUSB0
+      - hostPath: /dev/ttyACM0
+        containerPath: /dev/ttyACM0

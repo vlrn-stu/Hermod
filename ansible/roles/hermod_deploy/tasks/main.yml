@@ -1,0 +1,236 @@
+---
+# Deploy the Hermod stack via kustomize.
+# Idempotent: kubectl apply is declarative; repeated runs converge to desired state.
+
+# ---------------------------------------------------------------------------
+# Ensure repo is present at hermod_install_path
+# ---------------------------------------------------------------------------
+
+- name: hermod_deploy | Ensure {{ hermod_install_path }} parent directory exists
+  ansible.builtin.file:
+    path: "{{ hermod_install_path | dirname }}"
+    state: directory
+    owner: "{{ hermod_user }}"
+    group: "{{ hermod_user }}"
+    mode: "0755"
+  tags: [deploy, git]
+
+- name: hermod_deploy | Ensure rsync present on target (needed for source push)
+  ansible.builtin.apt:
+    name: rsync
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  when: hermod_source_mode == "rsync"
+  tags: [deploy, git, rsync]
+
+- name: hermod_deploy | Ensure destination dir owned by hermod_user (rsync mode)
+  ansible.builtin.file:
+    path: "{{ hermod_install_path }}"
+    state: directory
+    owner: "{{ hermod_user }}"
+    group: "{{ hermod_user }}"
+    mode: "0755"
+  become: true
+  when: hermod_source_mode == "rsync"
+  tags: [deploy, git, rsync]
+
+- name: hermod_deploy | Sync source tree from control node (rsync mode)
+  # NOTE: no trailing slash on src — the role + kustomize path expect the
+  # source dir's own name to show up under hermod_install_path (e.g.
+  # /opt/hermod/Hermod/kubernetes/base when source is .../Hermod).
+  ansible.posix.synchronize:
+    src: "{{ hermod_source_dir }}"
+    dest: "{{ hermod_install_path }}/"
+    delete: true
+    recursive: true
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=node_modules"
+      - "--exclude=bin"
+      - "--exclude=obj"
+      - "--exclude=target"
+      - "--exclude=__pycache__"
+      - "--exclude=tests/results"
+      - "--exclude=.vs"
+  become: true
+  become_user: "{{ hermod_user }}"
+  when: hermod_source_mode == "rsync"
+  register: _rsync_push
+  tags: [deploy, git, rsync]
+
+- name: hermod_deploy | Clone or update Hermod repo (git mode)
+  ansible.builtin.git:
+    repo: "{{ hermod_git_remote }}"
+    dest: "{{ hermod_install_path }}"
+    version: "{{ hermod_git_branch }}"
+    force: false
+    update: true
+  become: true
+  become_user: "{{ hermod_user }}"
+  when: hermod_source_mode == "git"
+  register: _git_clone
+  tags: [deploy, git]
+
+# ---------------------------------------------------------------------------
+# Node labels for hardware detection
+# ---------------------------------------------------------------------------
+
+- name: hermod_deploy | Gather USB device list
+  ansible.builtin.command:
+    cmd: lsusb
+  register: _lsusb
+  changed_when: false
+  failed_when: false
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Get current hermod.io/zigbee label
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get node {{ ansible_hostname }}
+      -o jsonpath='{.metadata.labels.hermod\.io/zigbee}'
+  register: _label_zigbee
+  changed_when: false
+  failed_when: false
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Label node for ZigBee hardware (10c4:ea60 detected)
+  ansible.builtin.command:
+    cmd: "microk8s kubectl label node {{ ansible_hostname }} hermod.io/zigbee=true --overwrite"
+  when: "'10c4:ea60' in _lsusb.stdout and _label_zigbee.stdout != 'true'"
+  changed_when: true
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Get current hermod.io/lora label
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get node {{ ansible_hostname }}
+      -o jsonpath='{.metadata.labels.hermod\.io/lora}'
+  register: _label_lora
+  changed_when: false
+  failed_when: false
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Label node for LoRa hardware (1a86:7523 detected)
+  ansible.builtin.command:
+    cmd: "microk8s kubectl label node {{ ansible_hostname }} hermod.io/lora=true --overwrite"
+  when: "'1a86:7523' in _lsusb.stdout and _label_lora.stdout != 'true'"
+  changed_when: true
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Label node for Bluetooth (sysfs class present)
+  ansible.builtin.stat:
+    path: /sys/class/bluetooth
+  register: _bt_class
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Get current hermod.io/bluetooth label
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get node {{ ansible_hostname }}
+      -o jsonpath='{.metadata.labels.hermod\.io/bluetooth}'
+  register: _label_bluetooth
+  changed_when: false
+  failed_when: false
+  tags: [deploy, labels]
+
+- name: hermod_deploy | Apply Bluetooth node label
+  ansible.builtin.command:
+    cmd: "microk8s kubectl label node {{ ansible_hostname }} hermod.io/bluetooth=true --overwrite"
+  when: _bt_class.stat.exists and _label_bluetooth.stdout != 'true'
+  changed_when: true
+  tags: [deploy, labels]
+
+# ---------------------------------------------------------------------------
+# Ensure Secrets exist before kubectl apply -k
+# ---------------------------------------------------------------------------
+# base/secrets.yaml and vault42/secrets.yaml are excluded from the
+# kustomization; credential material is populated imperatively so
+# repeated `kubectl apply -k` can't overwrite real values with
+# `change-me-in-production` placeholders. On Pi targets the shell lib
+# runs via `microk8s kubectl` with HERMOD_SECRETS_MODE=keep (non-
+# interactive, only create missing Secrets). An operator who wants
+# different values sets them via `microk8s kubectl create secret` or
+# edits the lib's mode before running the play.
+
+- name: hermod_deploy | Ensure hermod namespace exists
+  ansible.builtin.command:
+    cmd: "microk8s kubectl get namespace {{ hermod_namespace }}"
+  register: _ns_check
+  changed_when: false
+  failed_when: false
+  tags: [deploy, secrets]
+
+- name: hermod_deploy | Create hermod namespace if missing
+  ansible.builtin.command:
+    cmd: "microk8s kubectl create namespace {{ hermod_namespace }}"
+  when: _ns_check.rc != 0
+  changed_when: true
+  tags: [deploy, secrets]
+
+- name: hermod_deploy | Ensure cluster Secrets via ensure-secrets.sh (keep mode)
+  ansible.builtin.shell:
+    # Force bash — `set -o pipefail` is bash-only and the default
+    # shell on Ubuntu 24.04 is dash, which dies on the first line.
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      KUBECTL='microk8s kubectl' \
+      HERMOD_SECRETS_MODE=keep \
+      bash -c "source '{{ hermod_install_path }}/Hermod/lib/ensure-secrets.sh' && ensure_secrets"
+  register: _ensure_secrets
+  changed_when: "'applying Secrets' in _ensure_secrets.stderr"
+  tags: [deploy, secrets]
+
+- name: hermod_deploy | Show ensure-secrets output
+  ansible.builtin.debug:
+    var: _ensure_secrets.stderr_lines
+  tags: [deploy, secrets]
+
+# ---------------------------------------------------------------------------
+# Apply Kubernetes manifests
+# ---------------------------------------------------------------------------
+
+- name: hermod_deploy | Apply Hermod stack via kustomize ({{ hermod_kustomize_overlay }} overlay)
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl apply -k
+      {{ hermod_install_path }}/Hermod/kubernetes/{{ hermod_kustomize_overlay }}
+  register: _kubectl_apply
+  changed_when: "'configured' in _kubectl_apply.stdout or 'created' in _kubectl_apply.stdout"
+  tags: [deploy, kubectl]
+
+- name: hermod_deploy | Show kubectl apply output
+  ansible.builtin.debug:
+    var: _kubectl_apply.stdout_lines
+  tags: [deploy, kubectl]
+
+# ---------------------------------------------------------------------------
+# Wait for pods to reach Running state
+# ---------------------------------------------------------------------------
+
+- name: hermod_deploy | Wait for all pods in {{ hermod_namespace }} to be Running
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl wait pod
+      --all
+      --for=condition=ready
+      -n {{ hermod_namespace }}
+      --timeout={{ hermod_pod_wait_timeout }}s
+  register: _pod_wait
+  changed_when: false
+  failed_when: _pod_wait.rc != 0
+  tags: [deploy, wait]
+
+- name: hermod_deploy | Show pod status after deploy
+  ansible.builtin.command:
+    cmd: "microk8s kubectl get pods -n {{ hermod_namespace }} -o wide"
+  register: _pod_status
+  changed_when: false
+  tags: [deploy, wait]
+
+- name: hermod_deploy | Print pod status
+  ansible.builtin.debug:
+    var: _pod_status.stdout_lines
+  tags: [deploy, wait]

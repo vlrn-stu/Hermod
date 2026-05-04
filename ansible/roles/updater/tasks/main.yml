@@ -1,0 +1,55 @@
+---
+# Updater role: installs a systemd oneshot service + optional timer that runs
+# ansible-pull to keep the Hermod deployment up to date.
+# The timer is DISABLED by default; set hermod_updater_enabled: true to opt in.
+
+- name: updater | Ensure ansible is installed on the target node (for ansible-pull)
+  ansible.builtin.pip:
+    name:
+      - ansible
+    state: present
+    extra_args: "--break-system-packages"
+  tags: [updater, install]
+
+- name: updater | Deploy hermod-updater.service unit
+  ansible.builtin.template:
+    src: hermod-updater.service.j2
+    dest: /etc/systemd/system/hermod-updater.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+  tags: [updater, systemd]
+
+- name: updater | Deploy hermod-updater.timer unit
+  ansible.builtin.template:
+    src: hermod-updater.timer.j2
+    dest: /etc/systemd/system/hermod-updater.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd
+  tags: [updater, systemd]
+
+- name: updater | Flush handlers to reload systemd daemon
+  ansible.builtin.meta: flush_handlers
+  tags: [updater, systemd]
+
+- name: updater | Enable and start hermod-updater.timer (opt-in)
+  ansible.builtin.systemd:
+    name: hermod-updater.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: hermod_updater_enabled | bool
+  tags: [updater, systemd]
+
+- name: updater | Ensure hermod-updater.timer is stopped and disabled (default)
+  ansible.builtin.systemd:
+    name: hermod-updater.timer
+    enabled: false
+    state: stopped
+    daemon_reload: false
+  when: not (hermod_updater_enabled | bool)
+  failed_when: false   # unit may not exist on first run before daemon-reload
+  tags: [updater, systemd]

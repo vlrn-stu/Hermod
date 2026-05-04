@@ -1,0 +1,48 @@
+# /etc/udev/rules.d/99-hermod-usb.rules
+# Hermod IoT Translator - USB device udev rules
+# Deployed by: Hermod Ansible role (usb_passthrough)
+#
+# Match by USB vendor + class hint (kernel name pattern), NOT by exact
+# vendor:product. Vendors ship multiple PIDs across chip revisions
+# (CH340 → CH343 → CH9102), and a per-PID rule breaks the moment a new
+# batch lands. Vendor-only matching survives those revisions because the
+# bridge chips' wire protocol is identical.
+#
+# After editing, reload with:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# ---------------------------------------------------------------------------
+# Sonoff ZBDongle-P / Plus V2 - ZigBee coordinator
+#   - ZBDongle-P (CC2652P)  : 10c4:ea60  (Silicon Labs CP2102N)
+#   - ZBDongle-E (EFR32MG21): 10c4:ea60  (same SiLabs bridge, different MCU)
+# Both dongles present as /dev/ttyUSB*. Match by vendor + Itead product
+# string so future Sonoff revisions on the same bridge keep working
+# without needing to re-list every PID.
+# Symlink: /dev/zigbee_dongle
+# ---------------------------------------------------------------------------
+SUBSYSTEM=="tty", \
+  KERNEL=="ttyUSB*", \
+  ATTRS{idVendor}=="10c4", \
+  ATTRS{manufacturer}=="Itead", \
+  SYMLINK+="zigbee_dongle", \
+  MODE="0666", \
+  GROUP="dialout", \
+  TAG+="uaccess"
+
+# ---------------------------------------------------------------------------
+# Waveshare USB-TO-LoRa-HF (SX1262) - LoRa transceiver
+#   - CH340 variant : 1a86:7523
+#   - CH343 variant : 1a86:55d3  ("USB Single Serial")
+#   - CH9102 variant: 1a86:55d4
+# All present as /dev/ttyACM*. Match by vendor (1a86 = WCH/QinHeng) +
+# kernel name (ttyACM*) so any current/future CH3xx/CH9xxx bridge that
+# enumerates as CDC-ACM gets the symlink without a rule update.
+# Symlink: /dev/lora_dongle
+# ---------------------------------------------------------------------------
+SUBSYSTEM=="tty", \
+  KERNEL=="ttyACM*", \
+  ATTRS{idVendor}=="1a86", \
+  SYMLINK+="lora_dongle", \
+  MODE="0666", \
+  GROUP="dialout", \
+  TAG+="uaccess"

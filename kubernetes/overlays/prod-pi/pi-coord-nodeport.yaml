@@ -1,0 +1,15 @@
+# Pi-only: bind coord on host :42069 directly. Requires microk8s
+# --service-node-port-range to include 42069 (hermod.sh install prod-pi
+# configures this). Replaces an iptables REDIRECT that returned HTTP
+# 000 due to conntrack quirks on the Pi's multi-interface NIC.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermod-coordinator
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 42069
+      targetPort: 42069
+      nodePort: 42069

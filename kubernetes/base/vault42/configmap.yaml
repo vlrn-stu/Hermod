@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault42-config
+  namespace: hermod
+  labels:
+    app: vault42
+    component: authentication
+# Keys read by the vault42 binary — do not rename.
+data:
+  VAULT_PROFILE: "embedded"
+  LISTEN_ADDR: ":8080"
+  VAULT_AUTO_MIGRATE: "true"
+  VAULT_TLS_ENABLED: "false"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "vault"
+  # DB_SSLMODE (no underscore) per the upstream config struct.
+  DB_SSLMODE: "disable"
+  CACHE_BACKEND: "memory"
+  # JWT iss claim + JWKS base URL — MUST match Vault42:Authority on the
+  # coordinator side or token validation fails.
+  VAULT_ORIGIN: "http://vault42.hermod.svc.cluster.local:8080"
+  CORS_ORIGINS: "http://hermod-coordinator:42069,http://localhost:42069"
+  VAULT_SEED_FILE: "/app/seed/seed.json"
+  # Embedded profile: drop MFA so admin can log in on first boot
+  # without TOTP setup.
+  VAULT_MFA_REQUIRED: "false"
+  VAULT_PASSWORD_MIN_LENGTH: "15"
+  # 5000 (default 10): test matrix re-login bursts hit too_many_sessions
+  # past ~200; with 24h TTL, 5000 = ~200 logins/hr sustained.
+  VAULT_MAX_SESSIONS_PER_USER: "5000"
+  # Per-IP rate limit on login/refresh/password-reset/etc. AuthProxyController
+  # forwards X-Forwarded-For with the original browser IP, vault42 honours it
+  # because of EMBEDDED_TRUSTED_UPSTREAM below — so a brute-forcer hits the
+  # 5-attempts-in-15-min wall without poisoning legitimate users on shared IPs.
+  VAULT_RATE_LIMIT_ENABLED: "true"
+  # One-switch shortcut: trust RFC1918 + ULA + loopback as proxies and read
+  # X-Forwarded-For for ClientIP. Equivalent to setting TRUSTED_PROXIES +
+  # REAL_IP_HEADER manually but cleaner for in-cluster deployments where
+  # the upstream hop is always a sibling pod.
+  VAULT_EMBEDDED_TRUSTED_UPSTREAM: "true"

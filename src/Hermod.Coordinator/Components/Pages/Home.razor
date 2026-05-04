@@ -1,0 +1,350 @@
+@page "/"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IStatsService StatsService
+@inject ILogger<Home> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Hermod Dashboard</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-primary">Hermod</span> Dashboard
+        </h1>
+        <p class="text-muted mb-0">Universal IoT Cross-Technology Communication Hub</p>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+        <span class="badge @(_stats.OnlineDevices > 0 ? "bg-success" : "bg-secondary") fs-6">
+            <i class="bi bi-circle-fill me-1" style="font-size: 0.5rem;"></i>
+            System Online
+        </span>
+        <small class="text-muted">Last updated: @_stats.LastUpdated.ToLocalTime().ToString("HH:mm:ss")</small>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="mb-1 text-white-50 small text-uppercase">Total Devices</p>
+                        <h2 class="mb-0 fw-bold">@_stats.TotalDevices <small class="fw-normal text-white-50 fs-6">devices</small></h2>
+                    </div>
+                    <div class="rounded-circle bg-white bg-opacity-25 p-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm2 .5v2a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 .5-.5v-2a.5.5 0 0 0-.5-.5h-7a.5.5 0 0 0-.5.5zm0 4v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5zM4.5 9a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1zM4 12.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5zM7.5 6a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1zM7 9.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5zm.5 2.5a.5.5 0 0 0-.5.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1zM10 6.5v1a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5zm.5 2.5a.5.5 0 0 0-.5.5v4a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 0-.5-.5h-1z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <small class="text-white-50">Across @_stats.DevicesByProtocol.Count protocol@(_stats.DevicesByProtocol.Count == 1 ? "" : "s")</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="mb-1 text-white-50 small text-uppercase">Online Devices</p>
+                        <h2 class="mb-0 fw-bold">@_stats.OnlineDevices <small class="fw-normal text-white-50 fs-6">/ @_stats.TotalDevices</small></h2>
+                    </div>
+                    <div class="rounded-circle bg-white bg-opacity-25 p-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.267.267 0 0 1 .02-.022z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-3 progress" style="height: 4px; background: rgba(255,255,255,0.2);">
+                    <div class="progress-bar" style="background: white; width: @OnlinePercent.ToString("F0")%"></div>
+                </div>
+                <div class="mt-2">
+                    <small class="text-white-50">@OnlinePercent.ToString("F0")% reachable</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="mb-1 text-white-50 small text-uppercase">Active Rules</p>
+                        <h2 class="mb-0 fw-bold">@_stats.ActiveRules <small class="fw-normal text-white-50 fs-6">rules</small></h2>
+                    </div>
+                    <div class="rounded-circle bg-white bg-opacity-25 p-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M6 12.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5ZM3 8.062C3 6.76 4.235 5.765 5.53 5.886a26.58 26.58 0 0 0 4.94 0C11.765 5.765 13 6.76 13 8.062v1.157a.933.933 0 0 1-.765.935c-.845.147-2.34.346-4.235.346-1.895 0-3.39-.2-4.235-.346A.933.933 0 0 1 3 9.219V8.062Zm4.542-.827a.25.25 0 0 0-.217.068l-.92.9a24.767 24.767 0 0 1-1.871-.183.25.25 0 0 0-.068.495c.55.076 1.232.149 2.02.193a.25.25 0 0 0 .189-.071l.754-.736.847 1.71a.25.25 0 0 0 .404.062l.932-.97a25.286 25.286 0 0 0 1.922-.188.25.25 0 0 0-.068-.495c-.538.074-1.207.145-1.98.189a.25.25 0 0 0-.166.076l-.754.785-.842-1.7a.25.25 0 0 0-.182-.135Z"/>
+                            <path d="M8.5 1.866a1 1 0 1 0-1 0V3h-2A4.5 4.5 0 0 0 1 7.5V8a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1v1a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1v-.5A4.5 4.5 0 0 0 10.5 3h-2V1.866ZM14 7.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V7.5A3.5 3.5 0 0 1 5.5 4h5A3.5 3.5 0 0 1 14 7.5Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <small class="text-white-50">@FormatNumber(_stats.RulesExecuted) firings total</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <p class="mb-1 text-white-50 small text-uppercase">Messages Ingested</p>
+                        <h2 class="mb-0 fw-bold">@FormatNumber(_stats.MessagesProcessed) <small class="fw-normal text-white-50 fs-6">msg</small></h2>
+                    </div>
+                    <div class="rounded-circle bg-white bg-opacity-25 p-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4Zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2Zm13 2.383-4.708 2.825L15 11.105V5.383Zm-.034 6.876-5.64-3.471L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741ZM1 11.105l4.708-2.897L1 5.383v5.722Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <small class="text-white-50">@_stats.MessagesPerSecond1m.ToString("F1") msg/s &middot; 1-min avg</small>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Live messages/sec chart -->
+<div class="mb-4">
+    <LiveMessageChart />
+</div>
+
+<!-- Main Content -->
+<div class="row g-4">
+    <div class="col-lg-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">Devices by Protocol</h5>
+                <a href="/devices" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="card-body">
+                @if (_stats.DevicesByProtocol.Any())
+                {
+                    @foreach (var kvp in _stats.DevicesByProtocol)
+                    {
+                        var percentage = _stats.TotalDevices > 0 ? (double)kvp.Value / _stats.TotalDevices * 100 : 0;
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span class="fw-medium">@kvp.Key.ToDisplayName()</span>
+                                <span class="text-muted">@kvp.Value devices</span>
+                            </div>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar @GetProtocolColor(kvp.Key.ToString())" style="width: @percentage.ToString("F0")%"></div>
+                            </div>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="text-center text-muted py-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                            <path d="M6 .5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1H9v1.07a7.001 7.001 0 0 1 3.274 12.474l.601.602a.5.5 0 0 1-.707.708l-.746-.746A6.97 6.97 0 0 1 8 16a6.97 6.97 0 0 1-3.422-.892l-.746.746a.5.5 0 0 1-.707-.708l.602-.602A7.001 7.001 0 0 1 7 2.07V1h-.5A.5.5 0 0 1 6 .5zm2.5 5a.5.5 0 0 0-1 0v3.362l-1.429 2.38a.5.5 0 1 0 .858.515l1.5-2.5A.5.5 0 0 0 8.5 9V5.5zM.86 5.387A2.5 2.5 0 1 1 4.387 1.86 8.035 8.035 0 0 0 .86 5.387zM11.613 1.86a2.5 2.5 0 1 1 3.527 3.527 8.035 8.035 0 0 0-3.527-3.527z"/>
+                        </svg>
+                        <p class="mb-0">No devices connected yet</p>
+                        <small>Devices will appear here once they connect</small>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">System Status</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Uptime</small>
+                            <span class="fw-semibold">@FormatUptime(_stats.Uptime)</span>
+                            <small class="text-muted d-block">since last restart</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Throughput &middot; 1-min</small>
+                            <span class="fw-semibold">@_stats.MessagesPerSecond1m.ToString("F2") <small class="fw-normal text-muted">msg/s</small></span>
+                            <small class="text-muted d-block">sliding window</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Throughput &middot; 5-min</small>
+                            <span class="fw-semibold">@_stats.MessagesPerSecond5m.ToString("F2") <small class="fw-normal text-muted">msg/s</small></span>
+                            <small class="text-muted d-block">sliding window</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Throughput &middot; 1-hour</small>
+                            <span class="fw-semibold">@_stats.MessagesPerSecond1h.ToString("F2") <small class="fw-normal text-muted">msg/s</small></span>
+                            <small class="text-muted d-block">sliding window</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Rules Executed</small>
+                            <span class="fw-semibold">@FormatNumber(_stats.RulesExecuted) <small class="fw-normal text-muted">firings</small></span>
+                            <small class="text-muted d-block">lifetime</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Dropped Messages</small>
+                            <span class="fw-semibold @(_stats.MessagesDropped > 0 ? "text-warning" : "")">@FormatNumber(_stats.MessagesDropped) <small class="fw-normal text-muted">msg</small></span>
+                            <small class="text-muted d-block">queue overflow / lifetime</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Rule Errors</small>
+                            <span class="fw-semibold @(_stats.RulesErrored > 0 ? "text-danger" : "")">@FormatNumber(_stats.RulesErrored) <small class="fw-normal text-muted">errors</small></span>
+                            <small class="text-muted d-block">exceptions / lifetime</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Action Errors</small>
+                            <span class="fw-semibold @(_stats.ActionsErrored > 0 ? "text-danger" : "")">@FormatNumber(_stats.ActionsErrored) <small class="fw-normal text-muted">errors</small></span>
+                            <small class="text-muted d-block">failed dispatches / lifetime</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-xl-4">
+                        <div class="p-3 rounded-3 bg-light">
+                            <small class="text-muted d-block mb-1">Last Updated</small>
+                            <span class="fw-semibold">@_stats.LastUpdated.ToLocalTime().ToString("HH:mm:ss")</span>
+                            <small class="text-muted d-block">local time</small>
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="my-4" />
+
+                <h6 class="text-muted mb-3">Quick Actions</h6>
+                <div class="d-flex gap-2 flex-wrap">
+                    <a href="/devices" class="btn btn-outline-primary">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                            <path d="M11 6a3 3 0 1 1-6 0 3 3 0 0 1 6 0z"/>
+                            <path d="M2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                        </svg>
+                        Devices
+                    </a>
+                    <a href="/rules" class="btn btn-outline-primary">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                            <path d="M14.5 3a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-9a.5.5 0 0 1 .5-.5h13zm-13-1A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-13z"/>
+                            <path d="M3 5.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zM3 8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9A.5.5 0 0 1 3 8zm0 2.5a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5z"/>
+                        </svg>
+                        Rules
+                    </a>
+                    <a href="/messages" class="btn btn-outline-primary">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                            <path d="M8.39 12.648a1.32 1.32 0 0 0-.015.18c0 .305.21.508.5.508.266 0 .492-.172.555-.477l.554-2.703h1.204c.421 0 .617-.234.617-.547 0-.312-.188-.53-.617-.53h-.985l.516-2.524h1.265c.43 0 .618-.227.618-.547 0-.313-.188-.524-.618-.524h-1.046l.476-2.304a1.06 1.06 0 0 0 .016-.164.51.51 0 0 0-.516-.516.54.54 0 0 0-.539.43l-.523 2.554H7.617l.477-2.304c.008-.04.015-.118.015-.164a.512.512 0 0 0-.523-.516.539.539 0 0 0-.531.43L6.53 5.484H5.414c-.43 0-.617.22-.617.532 0 .312.187.539.617.539h.906l-.515 2.523H4.609c-.421 0-.609.219-.609.531 0 .313.188.547.61.547h.976l-.516 2.492c-.008.04-.015.125-.015.18 0 .305.21.508.5.508.265 0 .492-.172.554-.477l.555-2.703h2.242l-.515 2.492zm-1-6.109h2.266l-.515 2.563H6.859l.532-2.563z"/>
+                        </svg>
+                        Messages
+                    </a>
+                    <a href="/settings" class="btn btn-outline-secondary">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                            <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+                            <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+                        </svg>
+                        Settings
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private SystemStats _stats = new();
+    private Timer? _refreshTimer;
+
+    private double OnlinePercent =>
+        _stats.TotalDevices > 0
+            ? (double)_stats.OnlineDevices / _stats.TotalDevices * 100
+            : 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshStatsAsync();
+        _refreshTimer = new Timer(
+            _ => _ = InvokeAsync(async () =>
+            {
+                await RefreshStatsAsync();
+                StateHasChanged();
+            }),
+            state: null,
+            dueTime: RefreshInterval,
+            period: RefreshInterval);
+    }
+
+    private async Task RefreshStatsAsync()
+    {
+        try
+        {
+            _stats = await StatsService.GetCurrentStatsAsync(_pageCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to refresh home dashboard stats");
+        }
+    }
+
+    private string FormatUptime(TimeSpan uptime)
+    {
+        if (uptime.TotalDays >= 1)
+            return $"{(int)uptime.TotalDays}d {uptime.Hours}h {uptime.Minutes}m";
+        if (uptime.TotalHours >= 1)
+            return $"{(int)uptime.TotalHours}h {uptime.Minutes}m";
+        return $"{uptime.Minutes}m {uptime.Seconds}s";
+    }
+
+    private string FormatNumber(long number)
+    {
+        if (number >= 1000000)
+            return $"{number / 1000000.0:F1}M";
+        if (number >= 1000)
+            return $"{number / 1000.0:F1}K";
+        return number.ToString();
+    }
+
+    private string GetProtocolColor(string protocol) => protocol.ToLower() switch
+    {
+        "zigbee" => "protocol-zigbee",
+        "wifi" => "protocol-wifi",
+        "bluetooth" or "ble" => "protocol-bluetooth",
+        "lora" => "protocol-lora",
+        "unknown" => "protocol-universal",
+        _ => "protocol-universal"
+    };
+
+    public void Dispose()
+    {
+        // Stop the timer FIRST so no new tick fires, then cancel + dispose CTS.
+        // Old order (Cancel → Dispose timer → Dispose CTS) let an in-flight
+        // tick see a disposed CancellationTokenSource and fall through to
+        // the generic catch path, spamming stack traces in the log.
+        // Health.razor already does it this way; copying the pattern.
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+        try { _pageCts.Cancel(); } catch (ObjectDisposedException) { }
+        _pageCts.Dispose();
+    }
+}

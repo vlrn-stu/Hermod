@@ -1,0 +1,132 @@
+---
+# Base OS preparation for the Hermod target node.
+# Idempotent: safe to run on an already-configured machine.
+
+# Ubuntu Core (snap-based, read-only rootfs) has no apt and no
+# `/etc/fstab` write permission for `lineinfile`. Without this guard,
+# install.yml would fail at the first apt task with a confusing
+# "command not found" rather than telling the operator they're on the
+# wrong image.
+- name: base | Refuse to run on Ubuntu Core (no apt, read-only rootfs)
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      # Ubuntu Core sets ID=ubuntu-core in /etc/os-release; gather_facts
+      # surfaces it as ansible_lsb.id or ansible_distribution_release.
+      # A snap-only system also has /snap/core mounted but no /usr/bin/apt.
+      - "'core' not in (ansible_distribution_release | default('') | lower)"
+    fail_msg: >-
+      This role targets Ubuntu Server. The host reports
+      distribution={{ ansible_distribution }}
+      release={{ ansible_distribution_release | default('?') }},
+      which looks like Ubuntu Core. Re-image with Ubuntu Server LTS
+      and re-run install.yml.
+  tags: [always, base, preflight]
+
+- name: base | Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: "{{ base_apt_cache_valid_time }}"
+  tags: [base, apt]
+
+- name: base | Upgrade all packages to latest
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: true
+  tags: [base, apt]
+
+- name: base | Install required packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+  tags: [base, packages]
+
+- name: base | Set timezone
+  community.general.timezone:
+    name: "{{ hermod_timezone }}"
+  tags: [base, timezone]
+
+- name: base | Set hostname (when hermod_hostname is defined and non-empty)
+  ansible.builtin.hostname:
+    name: "{{ hermod_hostname }}"
+  when: hermod_hostname is defined and hermod_hostname | length > 0
+  tags: [base, hostname]
+
+# ---------------------------------------------------------------------------
+# Swap configuration (important for 8 GB Raspberry Pi to avoid OOM kills)
+# ---------------------------------------------------------------------------
+
+- name: base | Check if swapfile exists
+  ansible.builtin.stat:
+    path: "{{ hermod_swap_path }}"
+  register: _swap_stat
+  tags: [base, swap]
+
+- name: base | Create swapfile ({{ hermod_swap_size_mb }} MB)
+  ansible.builtin.command:
+    cmd: "fallocate -l {{ hermod_swap_size_mb }}M {{ hermod_swap_path }}"
+    creates: "{{ hermod_swap_path }}"
+  when: not _swap_stat.stat.exists
+  tags: [base, swap]
+
+- name: base | Set swapfile permissions to 0600
+  ansible.builtin.file:
+    path: "{{ hermod_swap_path }}"
+    mode: "0600"
+    owner: root
+    group: root
+  when: not _swap_stat.stat.exists
+  tags: [base, swap]
+
+- name: base | Format swapfile
+  ansible.builtin.command:
+    cmd: "mkswap {{ hermod_swap_path }}"
+  when: not _swap_stat.stat.exists
+  changed_when: true
+  tags: [base, swap]
+
+- name: base | Enable swapfile
+  ansible.builtin.command:
+    cmd: "swapon {{ hermod_swap_path }}"
+  when: not _swap_stat.stat.exists
+  changed_when: true
+  tags: [base, swap]
+
+- name: base | Persist swapfile in /etc/fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "{{ hermod_swap_path }} none swap sw 0 0"
+    state: present
+    regexp: "^{{ hermod_swap_path }}"
+  tags: [base, swap]
+
+# ---------------------------------------------------------------------------
+# Sysctl tuning for Kubernetes
+# ---------------------------------------------------------------------------
+
+- name: base | Enable IP forwarding (required for k8s networking)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
+  tags: [base, sysctl]
+
+- name: base | Ensure br_netfilter module is loaded
+  community.general.modprobe:
+    name: br_netfilter
+    state: present
+  tags: [base, sysctl]
+
+- name: base | Enable bridge-netfilter for iptables (required for k8s)
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop:
+    - net.bridge.bridge-nf-call-iptables
+    - net.bridge.bridge-nf-call-ip6tables
+  tags: [base, sysctl]

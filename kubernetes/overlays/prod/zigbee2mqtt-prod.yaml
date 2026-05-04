@@ -1,0 +1,59 @@
+# zigbee2mqtt prod — direct mTLS to nanomq:8883 via z2m's native
+# mqtts:// + ca/cert/key support. Hardware passthrough lives in
+# zigbee2mqtt-hardware-patch.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zigbee2mqtt
+  namespace: hermod
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-nanomq-tls
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 nanomq.hermod-prod.svc.cluster.local 8883; do sleep 2; done
+      containers:
+        - name: zigbee2mqtt
+          env:
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_SERVER
+              value: "mqtts://nanomq.hermod-prod.svc.cluster.local:8883"
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_CA
+              value: "/etc/zigbee2mqtt/tls/ca.crt"
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_CERT
+              value: "/etc/zigbee2mqtt/tls/client.crt"
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_KEY
+              value: "/etc/zigbee2mqtt/tls/client.key"
+            - name: ZIGBEE2MQTT_CONFIG_MQTT_REJECT_UNAUTHORIZED
+              value: "true"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: zigbee2mqtt-tls
+              mountPath: /etc/zigbee2mqtt/tls
+              readOnly: true
+      volumes:
+        - name: zigbee2mqtt-tls
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-zigbee2mqtt-client-tls
+                  items:
+                    - key: tls.crt
+                      path: client.crt
+                    - key: tls.key
+                      path: client.key

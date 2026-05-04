@@ -1,0 +1,86 @@
+# `cloudflared` Deployment that holds an outbound TLS connection to
+# Cloudflare's edge. Hostname-to-service routing is configured in the
+# Cloudflare Zero Trust dashboard against the tunnel's UUID, not in this
+# manifest, so adding/removing public hostnames does not require a
+# kubectl apply.
+#
+# Token-based auth (no config file): the dashboard generates a token
+# when the tunnel is created. Store it as a Secret BEFORE applying:
+#
+#   kubectl create secret generic cloudflared-token \
+#       --from-literal=TUNNEL_TOKEN='<token-from-dashboard>' \
+#       -n hermod-prod
+#
+# Two replicas for availability — Cloudflare load-balances across
+# concurrent connections from the same tunnel.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  labels:
+    app: cloudflared
+spec:
+  # Parked by default (replicas=0). The sibling overlay
+  # `prod-pi-letsencrypt-cloudflare-tunnel-active` patches this to 2 to
+  # actually open the tunnel. This split exists so a misapplied
+  # kustomize cannot accidentally publish the Coord to the internet.
+  replicas: 0
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:latest
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --metrics
+            - "0.0.0.0:2000"
+            - run
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-token
+                  key: TUNNEL_TOKEN
+          ports:
+            - name: metrics
+              containerPort: 2000
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

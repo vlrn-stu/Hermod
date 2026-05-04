@@ -1,0 +1,35 @@
+# Standalone Certificate request — cert-manager will obtain a Let's
+# Encrypt cert for HOST_PLACEHOLDER and store it in the Secret named
+# below, but NO traffic flows yet (no Ingress is created in this
+# overlay). This is intentional: this passive overlay validates the
+# whole acquisition pipeline (cert-manager + ClusterIssuer + reachability
+# challenge) without exposing the Coordinator publicly.
+#
+# To actually serve traffic on HOST_PLACEHOLDER, apply the sibling
+# overlay `prod-pi-letsencrypt-ingress`, which adds an Ingress that
+# references this Secret.
+#
+# !!! BEFORE APPLYING !!! Replace HOST_PLACEHOLDER (twice).
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hermod-coordinator-public-tls
+spec:
+  secretName: hermod-coordinator-public-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: HOST_PLACEHOLDER
+  dnsNames:
+    - HOST_PLACEHOLDER
+  duration: 2160h    # 90d (LE max)
+  renewBefore: 720h  # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment

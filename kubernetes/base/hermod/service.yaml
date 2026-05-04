@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermod-coordinator
+  namespace: hermod
+  labels:
+    app: hermod-coordinator
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 42069
+      targetPort: 42069
+      nodePort: 32069
+  selector:
+    app: hermod-coordinator
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermod-internal
+  namespace: hermod
+  labels:
+    app: hermod-coordinator
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 42069
+      targetPort: 42069
+  selector:
+    app: hermod-coordinator

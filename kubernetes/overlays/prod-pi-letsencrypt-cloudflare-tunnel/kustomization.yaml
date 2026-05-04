@@ -1,0 +1,70 @@
+# prod-pi-letsencrypt-cloudflare-tunnel — PASSIVE / parked-tunnel overlay (default).
+#
+# This overlay installs the cloudflared Deployment with replicas=0 and
+# leaves it parked. NO traffic is exposed publicly by this overlay
+# alone. The point is to validate that the Secret is in place and the
+# manifest renders cleanly before flipping the switch.
+#
+# To open the tunnel, apply the sibling overlay:
+#
+#     kubernetes/overlays/prod-pi-letsencrypt-cloudflare-tunnel-active/
+#
+# That overlay scales replicas to 2 and turns on HSTS preload.
+#
+# To require Cloudflare Access (Zero Trust) gating in front, apply
+# instead:
+#
+#     kubernetes/overlays/prod-pi-cloudflare-zero-trust/
+#
+# Original notes follow.
+#
+# Inherits the full prod-pi stack and adds a `cloudflared` Deployment
+# that holds an outbound TLS connection to Cloudflare's edge. Cloudflare
+# terminates the public TLS with its own publicly-trusted certificate
+# and forwards traffic to the in-cluster Coord Service.
+#
+# Why this overlay exists:
+#   * Zero inbound ports needed — works behind CGNAT, hostile NAT, or
+#     ISP networks that block port 80.
+#   * Cloudflare provides the public TLS cert automatically — no
+#     cert-manager, no Let's Encrypt rate limits, no ACME challenges.
+#   * Optional: gate the UI behind Cloudflare Access (SSO/2FA) without
+#     touching Hermod's auth code.
+#
+# Trade-off vs. the cert-manager LE overlay: Cloudflare terminates TLS
+# at its edge and re-encrypts to the origin. Cloudflare therefore sees
+# request plaintext. Acceptable for a homelab / thesis demo; for stricter
+# end-to-end requirements, use cert-manager DNS-01 instead so the cert
+# lives on the Pi.
+#
+# In-cluster mTLS continues to use the internal CA — see SECURITY.md
+# §3.5 and the prod-pi-letsencrypt/README.md for the two-PKI rationale.
+#
+# Prerequisites — see README.md in this directory:
+#   1. A Cloudflare account with Zero Trust enabled (free tier ok)
+#   2. A Cloudflare-managed DNS zone for your domain
+#   3. A tunnel created via the CF dashboard, with its token stored as
+#      a Kubernetes Secret named `cloudflared-token` in `hermod-prod`
+#   4. A public hostname configured in the tunnel pointing at
+#      https://hermod-coordinator.hermod-prod.svc.cluster.local:42069
+#
+# Deploy: `kubectl apply -k kubernetes/overlays/prod-pi-letsencrypt-cloudflare-tunnel/`
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+resources:
+  - ../prod-pi
+  - cloudflared.yaml
+
+patches:
+  # HSTS preload + IncludeSubDomains — safe with a publicly-trusted edge
+  # cert. File is duplicated from prod-pi-letsencrypt-ingress because
+  # kustomize requires patches to live within the loading overlay root
+  # (no `../sibling/file.yaml` path traversal is permitted).
+  - path: coord-hsts-preload.yaml
+    target:
+      kind: Deployment
+      name: hermod-coordinator

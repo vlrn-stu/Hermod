@@ -1,0 +1,974 @@
+@page "/topology"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Hermod.Core.Models.Rules
+@using Hermod.Core.Mqtt
+@using System.Text
+@using System.Text.Json
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IDeviceService DeviceService
+@inject IRulesService RulesService
+@inject IStatsService StatsService
+@inject IMqttService MqttService
+@inject IJSRuntime JS
+@inject ILogger<Topology> Logger
+@implements IAsyncDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Network Topology - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_errorMessage</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="RefreshData">Retry</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-info">Network</span> Topology
+        </h1>
+        <p class="text-muted mb-0 small">Interactive view of devices, protocols, and message routing</p>
+    </div>
+    <div class="btn-group btn-group-sm">
+        <button class="btn btn-outline-secondary" @onclick="FitGraph" title="Fit to view">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/>
+            </svg>
+            Fit
+        </button>
+        <button class="btn btn-outline-secondary" @onclick="RunLayout" title="Re-layout">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+            Layout
+        </button>
+        <button class="btn btn-outline-secondary" @onclick="RefreshData" title="Refresh data">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/>
+                <path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
+</div>
+
+<!-- Stats row: device counts, protocol breakdown, message throughput -->
+<div class="row g-2 mb-3">
+    <div class="col-6 col-md-2">
+        <div class="topology-stat">
+            <div class="stat-label">Devices</div>
+            <div class="stat-value">@_devices.Count</div>
+            <div class="stat-sub">@OnlineCount online · @OfflineCount offline</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="topology-stat">
+            <div class="stat-label">Active Rules</div>
+            <div class="stat-value text-info">@_rules.Count(r => r.Enabled)</div>
+            <div class="stat-sub">@_rules.Count total</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="topology-stat">
+            <div class="stat-label">Messages</div>
+            <div class="stat-value text-success">@FormatCount(_stats?.MessagesProcessed ?? 0)</div>
+            <div class="stat-sub">@FormatCount(_stats?.MessagesDropped ?? 0) dropped</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="topology-stat">
+            <div class="stat-label">Rule Exec</div>
+            <div class="stat-value text-warning">@FormatCount(_stats?.RulesExecuted ?? 0)</div>
+            <div class="stat-sub">@TopRuleName</div>
+        </div>
+    </div>
+    <div class="col-12 col-md-4">
+        <div class="topology-stat">
+            <div class="stat-label">Protocol Mix</div>
+            <div class="d-flex flex-wrap gap-2 mt-1">
+                @foreach (var group in _devices.GroupBy(d => d.Protocol).OrderBy(g => g.Key.ToString()))
+                {
+                    <span class="proto-pill" style="--proto-color:@GetProtocolColor(group.Key);">
+                        <span class="proto-dot"></span>
+                        @FormatProtocolName(group.Key)
+                        <strong class="ms-1">@group.Count()</strong>
+                    </span>
+                }
+                @if (_devices.Count == 0)
+                {
+                    <span class="text-muted small">No devices yet</span>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search + legend row -->
+<div class="d-flex flex-wrap align-items-center gap-3 mb-3">
+    <div class="position-relative flex-grow-1" style="max-width: 420px;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16"
+             class="position-absolute" style="top: 10px; left: 12px; color: var(--hermod-text-muted);">
+            <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+        </svg>
+        <input type="text"
+               class="form-control form-control-sm"
+               style="padding-left: 34px; padding-right: 34px;"
+               placeholder="Search devices, protocols, rules…"
+               value="@_search"
+               @oninput="OnSearchInput" />
+        @if (!string.IsNullOrEmpty(_search))
+        {
+            <button class="btn btn-sm btn-link position-absolute p-0"
+                    style="top: 4px; right: 6px; color: var(--hermod-text-muted);"
+                    @onclick="ClearSearch" title="Clear">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+                </svg>
+            </button>
+        }
+    </div>
+    <div class="d-flex gap-3 flex-wrap small ms-auto">
+        @foreach (var protocol in GetActiveProtocols())
+        {
+            <div class="d-flex align-items-center gap-1">
+                <span class="legend-dot" style="background: @GetProtocolColor(protocol);"></span>
+                <span class="text-muted">@FormatProtocolName(protocol)</span>
+            </div>
+        }
+        <div class="d-flex align-items-center gap-1">
+            <span class="legend-dot" style="background: var(--hermod-primary);"></span>
+            <span class="text-muted">Hub</span>
+        </div>
+        <span class="text-muted">| Scroll=zoom · Drag=pan · Click=focus</span>
+    </div>
+</div>
+
+<div class="topology-canvas-row position-relative">
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-0">
+            <div id="topology-container" style="height: 680px; background: var(--hermod-bg); border-radius: 0.5rem;"></div>
+        </div>
+    </div>
+    @if (_selectedDevice is not null)
+    {
+        <aside class="topology-side-panel card border-0 shadow-lg">
+            <div class="card-body p-3 d-flex flex-column">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <div class="text-muted small text-uppercase fw-semibold" style="letter-spacing: 0.05em;">Device</div>
+                        <h5 class="mb-1 fw-bold">@(_selectedDevice.Name ?? _selectedDevice.Id)</h5>
+                        <code class="small text-muted">@_selectedDevice.Id</code>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-link text-muted p-0" @onclick="ClearSelection" title="Close panel (Esc)">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <span class="badge proto-pill" style="--proto-color: @GetProtocolColor(_selectedDevice.Protocol);">
+                        <span class="proto-dot"></span>@FormatProtocolName(_selectedDevice.Protocol)
+                    </span>
+                    @if (_selectedDevice.Status == DeviceStatus.Online)
+                    {
+                        <span class="badge bg-success">Online</span>
+                    }
+                    else
+                    {
+                        <span class="badge bg-secondary">Offline</span>
+                    }
+                </div>
+
+                <dl class="row small mb-3 g-1">
+                    <dt class="col-4 text-muted">Topic</dt>
+                    <dd class="col-8 mb-1"><code class="small">@_selectedDevice.TopicBase</code></dd>
+                    @if (_selectedDevice.LastSeen != default)
+                    {
+                        <dt class="col-4 text-muted">Last seen</dt>
+                        <dd class="col-8 mb-1">@_selectedDevice.LastSeen.ToLocalTime().ToString("dd MMM HH:mm:ss")</dd>
+                    }
+                    @if (!string.IsNullOrEmpty(_selectedDevice.Manufacturer))
+                    {
+                        <dt class="col-4 text-muted">Maker</dt>
+                        <dd class="col-8 mb-1">@_selectedDevice.Manufacturer</dd>
+                    }
+                    @if (!string.IsNullOrEmpty(_selectedDevice.Model))
+                    {
+                        <dt class="col-4 text-muted">Model</dt>
+                        <dd class="col-8 mb-1">@_selectedDevice.Model</dd>
+                    }
+                </dl>
+
+                <div class="mb-3">
+                    <div class="text-muted small text-uppercase fw-semibold mb-2" style="letter-spacing: 0.05em;">Actions</div>
+                    <div class="d-grid gap-2">
+                        <a class="btn btn-sm btn-outline-primary" href="@DashboardLink(_selectedDevice)" target="_blank">
+                            Open in @FormatProtocolName(_selectedDevice.Protocol) dashboard
+                        </a>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => _showDetails = true">
+                            Device messages + state
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <div class="text-muted small text-uppercase fw-semibold mb-2" style="letter-spacing: 0.05em;">Quick publish</div>
+                    <div class="small text-muted mb-2">
+                        Publish a JSON payload to <code>@_selectedDevice.TopicBase/set</code>.
+                        Useful for toggling lights, triggering relays, sending one-shot commands.
+                    </div>
+                    <textarea class="form-control form-control-sm font-monospace mb-2"
+                              rows="2"
+                              placeholder='{"state":"ON"}'
+                              @bind="_publishPayload"></textarea>
+                    <button class="btn btn-sm btn-primary w-100"
+                            @onclick="PublishToSelected"
+                            disabled="@string.IsNullOrWhiteSpace(_publishPayload)">
+                        Publish to @($"{_selectedDevice.TopicBase}/set")
+                    </button>
+                    @if (!string.IsNullOrEmpty(_publishStatus))
+                    {
+                        <div class="small mt-2 @(_publishStatus.StartsWith("ok") ? "text-success" : "text-danger")">@_publishStatus</div>
+                    }
+                </div>
+
+                @if (_selectedDeviceRules.Any())
+                {
+                    <div class="mb-2">
+                        <div class="text-muted small text-uppercase fw-semibold mb-2" style="letter-spacing: 0.05em;">
+                            Rules touching this device (@_selectedDeviceRules.Count)
+                        </div>
+                        <ul class="list-unstyled small mb-0">
+                            @foreach (var rule in _selectedDeviceRules.Take(8))
+                            {
+                                <li class="mb-1 d-flex justify-content-between align-items-baseline">
+                                    <a href="/rules?id=@rule.Id" class="text-truncate me-2" style="max-width: 220px;">@rule.Name</a>
+                                    <span class="badge bg-secondary">@rule.ExecutionCount</span>
+                                </li>
+                            }
+                            @if (_selectedDeviceRules.Count > 8)
+                            {
+                                <li class="text-muted">… and @(_selectedDeviceRules.Count - 8) more</li>
+                            }
+                        </ul>
+                    </div>
+                }
+            </div>
+        </aside>
+    }
+</div>
+
+@if (_showDetails && _selectedDevice is not null)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background: var(--hermod-overlay); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content border-0 shadow-lg">
+                <div class="modal-header border-0 hermod-gradient-4">
+                    <h5 class="modal-title text-white">
+                        @_selectedDevice.Name
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" @onclick="() => _showDetails = false"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-4">
+                        <div class="col-md-6">
+                            <h6 class="text-muted mb-3">Device Information</h6>
+                            <div class="info-list">
+                                <div class="info-item">
+                                    <span class="info-label">Device ID</span>
+                                    <code class="info-value">@_selectedDevice.Id</code>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Protocol</span>
+                                    <span class="badge proto-pill" style="--proto-color: @GetProtocolColor(_selectedDevice.Protocol);">
+                                        <span class="proto-dot"></span>@FormatProtocolName(_selectedDevice.Protocol)
+                                    </span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Status</span>
+                                    @if (_selectedDevice.Status == DeviceStatus.Online)
+                                    {
+                                        <span class="badge bg-success">Online</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-secondary">Offline</span>
+                                    }
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Topic Base</span>
+                                    <code class="info-value">@_selectedDevice.TopicBase</code>
+                                </div>
+                                @if (_selectedDevice.LastSeen != default)
+                                {
+                                    <div class="info-item">
+                                        <span class="info-label">Last seen</span>
+                                        <span class="info-value">@_selectedDevice.LastSeen.ToLocalTime().ToString("dd MMM yyyy HH:mm:ss")</span>
+                                    </div>
+                                }
+                                @if (!string.IsNullOrEmpty(_selectedDevice.Manufacturer))
+                                {
+                                    <div class="info-item">
+                                        <span class="info-label">Manufacturer</span>
+                                        <span class="info-value">@_selectedDevice.Manufacturer</span>
+                                    </div>
+                                }
+                                @if (!string.IsNullOrEmpty(_selectedDevice.Model))
+                                {
+                                    <div class="info-item">
+                                        <span class="info-label">Model</span>
+                                        <span class="info-value">@_selectedDevice.Model</span>
+                                    </div>
+                                }
+                                <div class="info-item">
+                                    <span class="info-label">Firmware</span>
+                                    <span class="info-value">@(_selectedDevice.FirmwareVersion ?? "Unknown")</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="text-muted mb-3">Current State</h6>
+                            <pre class="bg-light p-3 rounded small mb-0" style="max-height: 220px; overflow: auto;">@FormatJson(_selectedDevice.State)</pre>
+                        </div>
+                        <div class="col-12">
+                            <h6 class="text-muted mb-3">Capabilities</h6>
+                            <pre class="bg-light p-3 rounded small mb-0" style="max-height: 180px; overflow: auto;">@FormatJson(_selectedDevice.Capabilities)</pre>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button type="button" class="btn btn-secondary" @onclick="() => _showDetails = false">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Active Rules Table (filtered to search hits) -->
+@{
+    var visibleRules = GetVisibleRules();
+}
+@if (visibleRules.Any())
+{
+    <div class="card border-0 shadow-sm mt-3">
+        <div class="card-header bg-transparent border-0 py-2 d-flex justify-content-between">
+            <h6 class="mb-0 fw-semibold small">Active Message Routes (@visibleRules.Count)</h6>
+            @if (!string.IsNullOrEmpty(_search))
+            {
+                <span class="text-muted small">Filtered by "@_search"</span>
+            }
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 220px;">
+                <table class="table table-sm table-hover mb-0 small">
+                    <thead class="table-light sticky-top">
+                        <tr>
+                            <th>Rule</th>
+                            <th>Source Topic</th>
+                            <th></th>
+                            <th>Target Topic</th>
+                            <th class="text-end">Exec</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var rule in visibleRules.OrderByDescending(r => r.ExecutionCount))
+                        {
+                            <tr>
+                                <td class="fw-medium text-truncate" style="max-width: 180px;">@rule.Name</td>
+                                <td><code class="text-truncate d-inline-block" style="max-width: 220px;">@rule.Trigger.TopicPattern</code></td>
+                                <td class="text-success">→</td>
+                                <td><code class="text-truncate d-inline-block" style="max-width: 220px;">@(rule.Actions.FirstOrDefault()?.Topic ?? "N/A")</code></td>
+                                <td class="text-end"><span class="badge bg-secondary">@rule.ExecutionCount</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .legend-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+
+    .topology-stat {
+        background: var(--hermod-card-bg);
+        border: 1px solid var(--hermod-border);
+        border-radius: 10px;
+        padding: 10px 14px;
+        height: 100%;
+    }
+
+    .topology-stat .stat-label {
+        font-size: 0.7rem;
+        color: var(--hermod-text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+    }
+
+    .topology-stat .stat-value {
+        font-size: 1.6rem;
+        font-weight: 700;
+        line-height: 1.1;
+        margin-top: 2px;
+    }
+
+    .topology-stat .stat-sub {
+        font-size: 0.72rem;
+        color: var(--hermod-text-muted);
+        margin-top: 2px;
+    }
+
+    .proto-pill {
+        display: inline-flex;
+        align-items: center;
+        font-size: 0.75rem;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--proto-color, var(--hermod-border));
+        color: var(--hermod-text);
+        background: color-mix(in srgb, var(--proto-color) 12%, transparent);
+    }
+
+    .proto-pill .proto-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--proto-color, var(--hermod-primary));
+        margin-right: 6px;
+    }
+
+    /* Selection panel floats over the right edge of the canvas
+       instead of pushing it; the graph keeps full width. The card
+       background is opaque so the panel reads cleanly even when the
+       Cytoscape grid behind it is busy. The aside collapses out of
+       the DOM (via the Razor conditional guard around it) when no
+       device is selected. */
+    .topology-side-panel {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 320px;
+        max-height: calc(680px - 24px);
+        background: var(--hermod-card-bg);
+        z-index: 5;
+    }
+    .topology-side-panel .card-body {
+        max-height: calc(680px - 24px);
+        overflow-y: auto;
+    }
+    .topology-side-panel dl {
+        margin-bottom: 0;
+    }
+    .topology-side-panel dt {
+        font-weight: 500;
+    }
+    @@media (max-width: 767.98px) {
+        /* On narrow phones the floating panel covers most of the canvas;
+           drop it to a stacked block so both stay usable. */
+        .topology-side-panel {
+            position: static;
+            width: 100%;
+            max-height: 420px;
+            margin-top: 1rem;
+        }
+    }
+</style>
+
+@code {
+    private readonly CancellationTokenSource _pageCts = new();
+    private List<Device> _devices = new();
+    private List<Rule> _rules = new();
+    private SystemStats? _stats;
+    private bool _initialized;
+    private string? _errorMessage;
+    private string _search = string.Empty;
+
+    // Selection panel state — populated when the operator taps a node
+    // in the Cytoscape canvas. JS calls back into OnTopologyNodeSelected
+    // via DotNetObjectReference; that handler resolves the node id to
+    // the device record and surfaces the panel on the right of the
+    // graph. Hub taps clear the selection (panel hides).
+    private DotNetObjectReference<Topology>? _selfRef;
+    private Device? _selectedDevice;
+    private string? _selectedNodeId;
+    private List<Rule> _selectedDeviceRules = new();
+    private string? _publishPayload;
+    private string? _publishStatus;
+    // Inline device-details modal — same shape as Devices.razor's row
+    // popup, opened from the topology side panel so the operator never
+    // has to leave the graph view to see device state, capabilities,
+    // and metadata.
+    private bool _showDetails;
+
+    [SupplyParameterFromQuery(Name = "focus")]
+    public string? FocusDeviceId { get; set; }
+
+    private int OnlineCount => _devices.Count(d => d.Status == DeviceStatus.Online);
+    private int OfflineCount => _devices.Count - OnlineCount;
+
+    private string TopRuleName =>
+        _rules.Where(r => r.Enabled && r.ExecutionCount > 0)
+              .OrderByDescending(r => r.ExecutionCount)
+              .Select(r => $"top: {Truncate(r.Name, 18)}")
+              .FirstOrDefault() ?? "no activity";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _initialized = true;
+            _selfRef = DotNetObjectReference.Create(this);
+            // Hand the back-channel to the JS layer so the Cytoscape tap
+            // handler (in App.razor) can call OnTopologyNodeSelected.
+            try
+            {
+                await JS.InvokeVoidAsync("setTopologyDotNetRef", _selfRef);
+            }
+            catch (JSDisconnectedException) { }
+            catch (Exception ex) { Logger.LogDebug(ex, "setTopologyDotNetRef interop failed"); }
+            // If LoadDataAsync from OnInitializedAsync already populated
+            // _devices before this first interactive render, rebuild the
+            // graph now. If the interactive circuit re-ran OnInit and
+            // LoadDataAsync is still in flight, LoadDataAsync itself will
+            // re-call UpdateGraphAsync when it finishes (via the
+            // _initialized guard at its tail).
+            await UpdateGraphAsync();
+            if (!string.IsNullOrWhiteSpace(FocusDeviceId))
+            {
+                await FocusNodeAsync(FocusDeviceId);
+            }
+        }
+    }
+
+    [JSInvokable]
+    public void OnTopologyNodeSelected(string nodeId)
+    {
+        // The hub's id is the well-known sentinel; clicking it clears
+        // the panel (also fires when the user re-clicks the same node
+        // in toggle-off mode in the JS handler).
+        if (string.IsNullOrEmpty(nodeId) || nodeId == "hermod-hub")
+        {
+            ClearSelection();
+            return;
+        }
+        // Device node ids are minted as "device-<id>" in BuildGraphData.
+        const string prefix = "device-";
+        var deviceId = nodeId.StartsWith(prefix, StringComparison.Ordinal)
+            ? nodeId[prefix.Length..]
+            : nodeId;
+        var match = _devices.FirstOrDefault(d => d.Id == deviceId);
+        if (match is null)
+        {
+            ClearSelection();
+            return;
+        }
+        _selectedNodeId = nodeId;
+        _selectedDevice = match;
+        _selectedDeviceRules = _rules
+            .Where(r => RuleTouchesDevice(r, match))
+            .OrderByDescending(r => r.ExecutionCount)
+            .ToList();
+        _publishPayload = null;
+        _publishStatus = null;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void ClearSelection()
+    {
+        if (_selectedDevice is null) return;
+        _selectedDevice = null;
+        _selectedNodeId = null;
+        _selectedDeviceRules = new List<Rule>();
+        _publishPayload = null;
+        _publishStatus = null;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task PublishToSelected()
+    {
+        if (_selectedDevice is null || string.IsNullOrWhiteSpace(_publishPayload))
+        {
+            return;
+        }
+        var topic = $"{_selectedDevice.TopicBase}/set";
+        try
+        {
+            // Validate JSON locally so a typo surfaces here instead of
+            // silently riding the broker. The publish itself takes any
+            // payload the operator typed, even non-JSON, so the panel
+            // stays useful for raw byte-shape devices.
+            try
+            {
+                using var _ = JsonDocument.Parse(_publishPayload);
+            }
+            catch (JsonException)
+            {
+                _publishStatus = "warning: payload is not valid JSON; publishing as-is";
+            }
+            await MqttService.PublishAsync(topic, _publishPayload, retain: false, qos: 1, _pageCts.Token);
+            _publishStatus = $"ok: published {Encoding.UTF8.GetByteCount(_publishPayload)} bytes to {topic}";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _publishStatus = $"error: {ex.Message}";
+            Logger.LogWarning(ex, "Quick-publish from topology panel failed");
+        }
+    }
+
+    // Pretty-prints the device's State / Capabilities maps for the
+    // details modal. Falls back to a literal "{}" rather than throwing
+    // when the dictionary is empty or the serialiser hits an unsupported
+    // value type — the modal must never bring down the whole page.
+    private static readonly JsonSerializerOptions _formatJsonOptions = new()
+    {
+        WriteIndented = true,
+    };
+    private static string FormatJson(IDictionary<string, object>? data)
+    {
+        if (data is null || data.Count == 0) return "{}";
+        try
+        {
+            return JsonSerializer.Serialize(data, _formatJsonOptions);
+        }
+        catch
+        {
+            return "{}";
+        }
+    }
+
+    private static string DashboardLink(Device d) => d.Protocol switch
+    {
+        Protocol.Zigbee => $"/proxy/zigbee/?device={d.Id}",
+        Protocol.Lora => $"/proxy/lora/",
+        Protocol.Wifi => $"/proxy/wifi/",
+        _ => $"/devices?deviceId={d.Id}",
+    };
+
+    private static bool RuleTouchesDevice(Rule r, Device d)
+    {
+        // Cheap match: source or any action topic contains the device
+        // name, id, or full topic root. Good enough for the side-panel;
+        // a precise match would route through the rules engine.
+        bool Matches(string? s) => !string.IsNullOrEmpty(s)
+            && (s.Contains(d.Id, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrEmpty(d.Name) && s.Contains(d.Name, StringComparison.OrdinalIgnoreCase))
+                || s.Contains(d.TopicBase, StringComparison.OrdinalIgnoreCase));
+        if (Matches(r.Trigger.TopicPattern)) return true;
+        foreach (var a in r.Actions)
+        {
+            if (Matches(a.Topic)) return true;
+        }
+        return false;
+    }
+
+    private async Task RefreshData()
+    {
+        await LoadDataAsync();
+        await UpdateGraphAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        try
+        {
+            // Topology renders a Cytoscape graph; the operator can apply
+            // the search filter / per-protocol clusters to keep readability
+            // sane on large registries. Cap is now generous: 10k nodes
+            // is the practical Cytoscape sweet spot on a modern browser.
+            // Anything past that gets reported as "showing N of M" in the
+            // status row so the operator knows to filter further.
+            const int TopologyDeviceCap = 10000;
+            var devicesTask = DeviceService.GetDevicesPageAsync(0, TopologyDeviceCap, filter: null, protocol: null, cancellationToken: _pageCts.Token);
+            var rulesTask = RulesService.GetAllRulesAsync(_pageCts.Token);
+            var statsTask = StatsService.GetCurrentStatsAsync(_pageCts.Token);
+            await Task.WhenAll(devicesTask, rulesTask, statsTask);
+
+            _devices = (await devicesTask).Items.ToList();
+            _rules = (await rulesTask).ToList();
+            _stats = await statsTask;
+            _errorMessage = null;
+
+            // First-load race fix: Blazor Server re-runs OnInitializedAsync
+            // after the interactive circuit reconnects, and
+            // OnAfterRenderAsync(firstRender=true) can fire before this
+            // completes. When that happens UpdateGraphAsync sees empty
+            // _devices and the graph renders only the hermod hub node
+            // until the user refreshes. Re-push the graph here so the
+            // second OnInit's data lands without a manual refresh.
+            if (_initialized)
+            {
+                await UpdateGraphAsync();
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to refresh topology data");
+            _errorMessage = "Failed to load topology data. Retry or check coordinator logs.";
+        }
+    }
+
+    private async Task UpdateGraphAsync()
+    {
+        if (!_initialized) return;
+        try
+        {
+            await JS.InvokeVoidAsync("updateTopology", BuildGraphData(), _search);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to update topology graph via JS interop");
+        }
+    }
+
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        _search = e.Value?.ToString() ?? string.Empty;
+        if (!_initialized) return;
+        try
+        {
+            await JS.InvokeVoidAsync("filterTopology", _search);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "filterTopology JS interop failed");
+        }
+    }
+
+    private async Task ClearSearch()
+    {
+        _search = string.Empty;
+        await OnSearchInput(new ChangeEventArgs { Value = string.Empty });
+    }
+
+    private async Task FocusNodeAsync(string deviceId)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("focusTopologyNode", $"device-{deviceId}");
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "focusTopologyNode JS interop failed");
+        }
+    }
+
+    private Task FitGraph() => _initialized ? JS.InvokeVoidAsync("fitTopology").AsTask() : Task.CompletedTask;
+    private Task RunLayout() => _initialized ? JS.InvokeVoidAsync("layoutTopology").AsTask() : Task.CompletedTask;
+
+    private object BuildGraphData()
+    {
+        var nodes = new List<object>();
+        var edges = new List<object>();
+
+        nodes.Add(new { data = new { id = "hermod-hub", label = "HERMOD", type = "hub" } });
+
+        var sortedDevices = _devices
+            .OrderBy(d => d.Protocol.ToString())
+            .ThenBy(d => d.Name ?? d.Id);
+
+        foreach (var device in sortedDevices)
+        {
+            var protoName = device.Protocol.ToString().ToLower();
+            var protoDisplay = device.Protocol.ToDisplayName();
+            var isActive = device.Status == DeviceStatus.Online ||
+                          (device.LastSeen != default && DateTime.UtcNow - device.LastSeen < TimeSpan.FromMinutes(5));
+
+            var deviceId = $"device-{device.Id}";
+            var fullName = device.Name ?? device.Id;
+            // Emit a searchable blob: name + id + manufacturer + model + protocol + topic base.
+            var searchBlob = string.Join(" ",
+                fullName,
+                device.Id,
+                device.Manufacturer ?? string.Empty,
+                device.Model ?? string.Empty,
+                protoName,
+                protoDisplay,
+                device.TopicBase ?? string.Empty).ToLowerInvariant();
+
+            nodes.Add(new
+            {
+                data = new
+                {
+                    id = deviceId,
+                    deviceId = device.Id,
+                    label = fullName,
+                    fullName,
+                    type = "device",
+                    protocol = protoName,
+                    protocolDisplay = protoDisplay,
+                    manufacturer = device.Manufacturer ?? string.Empty,
+                    model = device.Model ?? string.Empty,
+                    topicBase = device.TopicBase ?? string.Empty,
+                    lastSeen = device.LastSeen.ToString("u"),
+                    status = isActive ? "online" : "offline",
+                    search = searchBlob
+                }
+            });
+
+            edges.Add(new
+            {
+                data = new
+                {
+                    id = $"link-{device.Id}",
+                    source = "hermod-hub",
+                    target = deviceId,
+                    type = "device-link",
+                    protocol = protoName
+                }
+            });
+        }
+
+        var edgeSet = new HashSet<string>();
+        foreach (var rule in _rules.Where(r => r.Enabled))
+        {
+            var sourceTopic = rule.Trigger.TopicPattern;
+            var targetTopic = rule.Actions.FirstOrDefault()?.Topic ?? "";
+            var sourceDevices = FindDevicesByTopic(sourceTopic);
+            var targetDevices = FindDevicesByTopic(targetTopic);
+
+            foreach (var sourceDevice in sourceDevices)
+            {
+                foreach (var targetDevice in targetDevices)
+                {
+                    if (sourceDevice.Id == targetDevice.Id) continue;
+
+                    var edgeKey = $"{sourceDevice.Id}->{targetDevice.Id}:{rule.Id}";
+                    if (!edgeSet.Add(edgeKey)) continue;
+
+                    edges.Add(new
+                    {
+                        data = new
+                        {
+                            id = $"rule-{rule.Id}-{sourceDevice.Id}-{targetDevice.Id}",
+                            source = $"device-{sourceDevice.Id}",
+                            target = $"device-{targetDevice.Id}",
+                            label = rule.Name,
+                            fullLabel = rule.Name,
+                            type = "rule",
+                            ruleId = rule.Id,
+                            sourceTopic,
+                            targetTopic,
+                            execCount = rule.ExecutionCount
+                        }
+                    });
+                }
+            }
+        }
+
+        return new { nodes, edges };
+    }
+
+    /// <summary>
+    /// Find devices whose <see cref="Device.TopicBase"/> is matched by the
+    /// given MQTT topic pattern (supports <c>+</c> and <c>#</c> wildcards via
+    /// <see cref="MqttTopicMatcher"/>).
+    /// </summary>
+    private List<Device> FindDevicesByTopic(string topicPattern)
+    {
+        if (string.IsNullOrEmpty(topicPattern)) return new List<Device>();
+
+        return _devices
+            .Where(d => !string.IsNullOrEmpty(d.TopicBase) &&
+                        MqttTopicMatcher.IsMatch(topicPattern, d.TopicBase))
+            .ToList();
+    }
+
+    private List<Rule> GetVisibleRules()
+    {
+        var enabled = _rules.Where(r => r.Enabled);
+        if (string.IsNullOrWhiteSpace(_search)) return enabled.ToList();
+
+        var q = _search.Trim().ToLowerInvariant();
+        return enabled.Where(r =>
+            (r.Name?.ToLowerInvariant().Contains(q) ?? false) ||
+            (r.Trigger.TopicPattern?.ToLowerInvariant().Contains(q) ?? false) ||
+            (r.Actions.FirstOrDefault()?.Topic?.ToLowerInvariant().Contains(q) ?? false)).ToList();
+    }
+
+    private IEnumerable<Protocol> GetActiveProtocols()
+    {
+        return _devices
+            .Select(d => d.Protocol)
+            .Distinct()
+            .OrderBy(p => p.ToString());
+    }
+
+    private static string GetProtocolColor(Protocol protocol) => protocol switch
+    {
+        Protocol.Zigbee => "#22C55E",
+        Protocol.Bluetooth => "#0EA5E9",
+        Protocol.Lora => "#F97316",
+        Protocol.Wifi => "#A855F7",
+        Protocol.Unknown => "#64748B",
+        _ => "#64748B"
+    };
+
+    private static string FormatProtocolName(Protocol protocol) => protocol.ToDisplayName();
+
+    private static string FormatCount(long n)
+    {
+        if (n >= 1_000_000) return $"{n / 1_000_000.0:0.#}M";
+        if (n >= 1_000) return $"{n / 1_000.0:0.#}k";
+        return n.ToString();
+    }
+
+    private static string Truncate(string? s, int max)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        return s.Length <= max ? s : s[..(max - 1)] + "…";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+        _selfRef?.Dispose();
+        _selfRef = null;
+
+        // `@rendermode InteractiveServer` disposes the prerendered component
+        // instance as soon as the circuit boots its interactive copy.
+        // The prerendered instance never runs OnAfterRenderAsync, so
+        // _initialized is false and JS interop is unavailable during its
+        // disposal — calling destroyTopology there throws
+        // InvalidOperationException and spams the logs. Only invoke when
+        // we actually mounted a graph this lifetime.
+        if (!_initialized) return;
+
+        try { await JS.InvokeVoidAsync("destroyTopology"); }
+        catch (JSDisconnectedException) { }
+        catch (InvalidOperationException) { /* static-render path; graph never mounted */ }
+        catch (Exception ex) { Logger.LogDebug(ex, "Topology JS teardown threw on disposal"); }
+    }
+}

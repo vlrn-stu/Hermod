@@ -1,0 +1,500 @@
+@page "/login"
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@layout Hermod.Coordinator.Components.Layout.AuthLayout
+@using System.Text.Json
+@using Hermod.Coordinator.Models
+@using Hermod.Coordinator.Services
+@using Hermod.Core.Configuration
+@using Microsoft.Extensions.Options
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IHttpClientFactory HttpClientFactory
+@inject Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider AuthStateProvider
+@inject IOptions<HermodSettings> Settings
+@rendermode InteractiveServer
+
+<PageTitle>Hermod Login</PageTitle>
+
+<div class="login-wrapper">
+    <div class="login-card">
+        <div class="login-header">
+            <img src="logo.png" alt="Hermod" class="brand-logo" />
+            <h2>Hermod</h2>
+            <p>IoT Universal Translator</p>
+        </div>
+
+        <div class="login-body">
+            @if (!string.IsNullOrEmpty(_errorMessage))
+            {
+                <div class="alert alert-danger mb-3">@_errorMessage</div>
+            }
+
+            @if (_inTwoFactorStep)
+            {
+                <EditForm Model="_twoFactorModel" OnValidSubmit="HandleTwoFactor">
+                    <DataAnnotationsValidator />
+
+                    <p class="text-muted mb-3">
+                        Enter the 6-digit code from your authenticator app to finish signing in.
+                    </p>
+
+                    <div class="mb-3">
+                        <label class="form-label">Authentication code</label>
+                        <InputText @bind-Value="_twoFactorModel.Code"
+                                   class="form-control form-control-lg"
+                                   placeholder="123456"
+                                   autocomplete="one-time-code"
+                                   inputmode="numeric"
+                                   maxlength="12" />
+                        <ValidationMessage For="@(() => _twoFactorModel.Code)" />
+                    </div>
+
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg" disabled="@_isLoading">
+                            @if (_isLoading)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                            }
+                            Verify
+                        </button>
+                        <button type="button" class="btn btn-link" @onclick="CancelTwoFactor" disabled="@_isLoading">
+                            Back
+                        </button>
+                    </div>
+                </EditForm>
+            }
+            else
+            {
+                <EditForm Model="_loginModel" OnValidSubmit="HandleLogin">
+                    <DataAnnotationsValidator />
+
+                    <div class="mb-3">
+                        <label class="form-label">Email</label>
+                        <InputText @bind-Value="_loginModel.Email"
+                                   class="form-control form-control-lg"
+                                   placeholder="Enter email"
+                                   autocomplete="username" />
+                        <ValidationMessage For="@(() => _loginModel.Email)" />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Password</label>
+                        <InputText @bind-Value="_loginModel.Password"
+                                   type="password"
+                                   class="form-control form-control-lg"
+                                   placeholder="Enter password"
+                                   autocomplete="current-password" />
+                        <ValidationMessage For="@(() => _loginModel.Password)" />
+                    </div>
+
+                    <div class="mb-4 form-check">
+                        <input type="checkbox" class="form-check-input" id="rememberMe" @bind="_rememberMe" />
+                        <label class="form-check-label" for="rememberMe">Remember me</label>
+                    </div>
+
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary btn-lg" disabled="@_isLoading">
+                            @if (_isLoading)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                            }
+                            Sign In
+                        </button>
+                    </div>
+                </EditForm>
+            }
+
+            <div class="login-footer">
+                <small class="text-muted">
+                    Forgot password? Use CLI on host to reset.
+                </small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .login-wrapper {
+        width: 100%;
+        max-width: 420px;
+    }
+
+    .login-card {
+        background: var(--hermod-card-bg);
+        border-radius: 20px;
+        box-shadow: 0 25px 80px rgba(0, 0, 0, 0.4);
+        overflow: hidden;
+    }
+
+    .login-header {
+        background: var(--hermod-gradient-1);
+        padding: 2.5rem;
+        text-align: center;
+        color: white;
+    }
+
+    .brand-logo {
+        width: 144px;
+        height: 144px;
+        object-fit: contain;
+        margin-bottom: 1rem;
+        border-radius: 12px;
+    }
+
+    .login-header h2 {
+        margin: 0;
+        font-weight: 700;
+        font-size: 1.75rem;
+        color: #000000;
+    }
+
+    .login-header p {
+        margin: 0.5rem 0 0 0;
+        opacity: 0.8;
+        font-size: 0.9rem;
+        color: #000000;
+    }
+
+    .login-body {
+        padding: 2rem;
+    }
+
+    .form-label {
+        font-weight: 500;
+        color: var(--hermod-text);
+    }
+
+    .form-control-lg {
+        padding: 0.875rem 1rem;
+        border-radius: 10px;
+        border: 2px solid var(--hermod-border);
+        background-color: var(--hermod-bg-secondary);
+        color: var(--hermod-text);
+    }
+
+    .form-control-lg:focus {
+        border-color: var(--hermod-primary);
+        box-shadow: 0 0 0 3px rgba(var(--hermod-primary-rgb), 0.15);
+        background-color: var(--hermod-bg-secondary);
+        color: var(--hermod-text);
+    }
+
+    .btn-primary {
+        background: var(--hermod-gradient-1);
+        border: none;
+        padding: 0.875rem 1.5rem;
+        border-radius: 10px;
+        font-weight: 600;
+        color: #000;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(var(--hermod-primary-rgb), 0.4);
+        color: #000;
+    }
+
+    .login-footer {
+        text-align: center;
+        margin-top: 1.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--hermod-border);
+    }
+</style>
+
+@code {
+    private LoginModel _loginModel = new();
+    private TwoFactorModel _twoFactorModel = new();
+    private bool _isLoading;
+    private bool _rememberMe;
+    private bool _inTwoFactorStep;
+    private string? _challengeToken;
+    private string? _errorMessage;
+    private bool _initialized;
+
+    private class LoginModel
+    {
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+    }
+
+    private class TwoFactorModel
+    {
+        public string Code { get; set; } = string.Empty;
+    }
+
+    // Mirrors hermodAuth.postJson's return shape; PascalCase via JsonPropertyName.
+    private sealed class JsFetchResult
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public int Status { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("body")]
+        public string Body { get; set; } = string.Empty;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_initialized)
+        {
+            _initialized = true;
+            await CheckAuthStatus();
+            StateHasChanged();
+        }
+    }
+
+    private async Task CheckAuthStatus()
+    {
+        try
+        {
+            var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+            if (authState.User.Identity?.IsAuthenticated == true)
+            {
+                Navigation.NavigateTo(PostLoginDestination());
+                return;
+            }
+
+            // Not authenticated in the current request. Try a server-side
+            // refresh — the hermod_session cookie is HttpOnly, so the
+            // browser sends it automatically. If a Remember-Me session is
+            // still alive we get a fresh access token back and land the
+            // user back on the home page without an interactive login.
+            var refreshed = await TryServerRefreshAsync();
+            if (refreshed)
+            {
+                if (AuthStateProvider is Vault42AuthStateProvider vaultProvider)
+                {
+                    vaultProvider.NotifyAuthenticationStateChanged();
+                }
+                Navigation.NavigateTo(PostLoginDestination(), forceLoad: true);
+                return;
+            }
+
+            // No live session either — clear any stale client storage so
+            // the form shows up without stale-token ghosts.
+            await JS.InvokeVoidAsync("localStorage.removeItem", "hermod_token");
+            await JS.InvokeVoidAsync("sessionStorage.removeItem", "hermod_token");
+        }
+        catch
+        {
+            // Token check failed; fall through to the login form.
+        }
+    }
+
+    private async Task<bool> TryServerRefreshAsync()
+    {
+        try
+        {
+            var client = HttpClientFactory.CreateClient("LocalApi");
+            if (client.BaseAddress is null)
+            {
+                client.BaseAddress = new Uri(Navigation.BaseUri);
+            }
+            // The fetch browser path carries the hermod_session cookie for
+            // us. No Authorization header needed — the refresh endpoint
+            // identifies the caller by the session cookie alone.
+            using var response = await client.PostAsync("/api/auth/refresh", content: null);
+            if (!response.IsSuccessStatusCode) return false;
+
+            var body = await response.Content.ReadAsStringAsync();
+            var loginResponse = JsonSerializer.Deserialize<Vault42LoginResponse>(body);
+            if (string.IsNullOrEmpty(loginResponse?.AccessToken)) return false;
+
+            await StoreAccessTokenAsync(loginResponse.AccessToken, rememberMe: true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private Task StoreAccessTokenAsync(string accessToken, bool rememberMe)
+    {
+        // No-op under the HttpOnly cookie model: the server
+        // (AuthProxyController + vault42) sets the access + refresh cookies as
+        // HttpOnly + Secure + SameSite, and the browser auto-attaches them.
+        // The Blazor circuit reads identity via Vault42AuthStateProvider
+        // (server-side, IHttpContextAccessor). JS never touches the token —
+        // eliminates the XSS-token-exfiltration class entirely.
+        _ = accessToken; _ = rememberMe;
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleLogin()
+    {
+        _isLoading = true;
+        _errorMessage = null;
+
+        try
+        {
+            // BROWSER-side fetch via JS interop so the Set-Cookie response
+            // header from /api/auth/login attaches to the user's cookie
+            // jar. A server-side HttpClient call would return the cookies
+            // to the SSR process, not the browser, so the next navigation
+            // would still be anonymous and bounce to /login.
+            var request = new Vault42LoginRequest
+            {
+                Email = _loginModel.Email,
+                Password = _loginModel.Password,
+                RememberMe = _rememberMe
+            };
+
+            var jsResult = await JS.InvokeAsync<JsFetchResult>(
+                "hermodAuth.postJson", "/api/auth/login", request);
+
+            if (jsResult.Status < 200 || jsResult.Status >= 300)
+            {
+                var errorResponse = JsonSerializer.Deserialize<Vault42ErrorResponse>(jsResult.Body);
+                _errorMessage = errorResponse?.Error ?? $"Login failed ({jsResult.Status})";
+                return;
+            }
+
+            var loginResponse = JsonSerializer.Deserialize<Vault42LoginResponse>(jsResult.Body);
+
+            if (loginResponse?.Requires2fa == true)
+            {
+                if (Settings.Value.Auth.DisableTwoFactor)
+                {
+                    _errorMessage =
+                        "Vault requires 2FA for this account, but Hermod:Auth:DisableTwoFactor is set. " +
+                        "Either turn 2FA off in Vault or unset the Hermod config flag.";
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(loginResponse.ChallengeToken))
+                {
+                    _errorMessage = "2FA required but Vault returned no challenge token.";
+                    return;
+                }
+
+                _challengeToken = loginResponse.ChallengeToken;
+                _twoFactorModel = new TwoFactorModel();
+                _inTwoFactorStep = true;
+                return;
+            }
+
+            await CompleteLoginAsync(loginResponse);
+        }
+        catch (HttpRequestException)
+        {
+            _errorMessage = "Cannot connect to authentication service. Please try again.";
+        }
+        catch (Exception)
+        {
+            _errorMessage = "Connection error. Please try again.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task HandleTwoFactor()
+    {
+        _isLoading = true;
+        _errorMessage = null;
+
+        if (string.IsNullOrEmpty(_challengeToken))
+        {
+            _errorMessage = "Session expired. Please sign in again.";
+            _inTwoFactorStep = false;
+            _isLoading = false;
+            return;
+        }
+
+        try
+        {
+            // Same browser-side fetch reasoning as /api/auth/login above.
+            var request = new Vault42VerifyTwoFactorRequest
+            {
+                ChallengeToken = _challengeToken,
+                Code = _twoFactorModel.Code.Trim()
+            };
+
+            var jsResult = await JS.InvokeAsync<JsFetchResult>(
+                "hermodAuth.postJson", "/api/auth/verify-2fa", request);
+
+            if (jsResult.Status < 200 || jsResult.Status >= 300)
+            {
+                var errorResponse = JsonSerializer.Deserialize<Vault42ErrorResponse>(jsResult.Body);
+                _errorMessage = errorResponse?.Error ?? $"Verification failed ({jsResult.Status})";
+                return;
+            }
+
+            var loginResponse = JsonSerializer.Deserialize<Vault42LoginResponse>(jsResult.Body);
+            await CompleteLoginAsync(loginResponse);
+        }
+        catch (HttpRequestException)
+        {
+            _errorMessage = "Cannot connect to authentication service. Please try again.";
+        }
+        catch (Exception)
+        {
+            _errorMessage = "Connection error. Please try again.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void CancelTwoFactor()
+    {
+        _inTwoFactorStep = false;
+        _challengeToken = null;
+        _twoFactorModel = new TwoFactorModel();
+        _errorMessage = null;
+    }
+
+    // Extracts ?returnUrl=... from the current page query, validates
+    // it's a same-origin relative path (no //host or scheme), and
+    // returns it. Falls back to "/" on anything suspicious so we
+    // never hand an attacker-controlled open redirect off the login
+    // form.
+    private string PostLoginDestination()
+    {
+        try
+        {
+            var uri = new Uri(Navigation.Uri);
+            var q = System.Web.HttpUtility.ParseQueryString(uri.Query);
+            var candidate = q["returnUrl"];
+            if (string.IsNullOrWhiteSpace(candidate)) return "/";
+            // Must be a relative URL starting with "/" and not "//".
+            if (candidate.Length < 2 || candidate[0] != '/' || candidate[1] == '/' || candidate[1] == '\\')
+                return "/";
+            // Don't bounce back to /login itself.
+            if (candidate.StartsWith("/login", StringComparison.OrdinalIgnoreCase))
+                return "/";
+            return candidate;
+        }
+        catch
+        {
+            return "/";
+        }
+    }
+
+    private async Task CompleteLoginAsync(Vault42LoginResponse? loginResponse)
+    {
+        // The proxy intentionally returns access_token=null in the body —
+        // the JWT lives only in the HttpOnly hermod_token cookie that the
+        // browser already attached when /api/auth/login responded. Don't
+        // gate the redirect on a body-side token.
+        if (loginResponse is null)
+        {
+            _errorMessage = "Login failed: empty response";
+            return;
+        }
+
+        await StoreAccessTokenAsync(loginResponse.AccessToken ?? string.Empty, _rememberMe);
+
+        if (AuthStateProvider is Vault42AuthStateProvider vaultProvider)
+        {
+            vaultProvider.NotifyAuthenticationStateChanged();
+        }
+
+        // forceLoad:true ensures the next page render is a fresh HTTP request
+        // that carries the just-set cookie so the server-side auth state sees
+        // the authenticated user.
+        Navigation.NavigateTo(PostLoginDestination(), forceLoad: true);
+    }
+}

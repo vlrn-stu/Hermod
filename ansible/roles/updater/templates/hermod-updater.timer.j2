@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermod Ansible-pull updater timer
+Documentation=https://github.com/ansible/ansible
+# The implicit Unit= binding via matching filename triggers hermod-updater.service
+# on timer expiry; an explicit Requires= is not needed and causes warnings.
+
+[Timer]
+# Schedule is controlled by hermod_updater_schedule in group_vars/all.yml.
+# Default: daily. The timer is disabled by default; set hermod_updater_enabled: true to opt in.
+{{ hermod_updater_schedule }}
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

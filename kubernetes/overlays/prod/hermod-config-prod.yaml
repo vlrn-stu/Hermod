@@ -1,0 +1,118 @@
+# Coord appsettings for prod — points URLs at hermod-prod namespace and
+# uses TLS endpoints. z2m/lora2mqtt UIs are still plain HTTP internally;
+# coord proxies them via YARP so external traffic stays HTTPS-only.
+#
+# Engine + Storage + Features must mirror base/hermod/configmap.yaml.
+# The ConfigMap data field is a single string blob so kustomize cannot
+# field-merge sub-keys; this overlay reproduces the full JSON. Changing
+# tunables here without changing them in base lets dev/kind drift.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermod-config
+  namespace: hermod
+data:
+  appsettings.Production.json: |
+    {
+      "Logging": {
+        "LogLevel": {
+          "Default": "Information",
+          "Microsoft.AspNetCore": "Warning",
+          "Hermod": "Information"
+        }
+      },
+      "AllowedHosts": "*",
+      "Hermod": {
+        "Mqtt": {
+          "Host": "nanomq.hermod-prod.svc.cluster.local",
+          "Port": 8883,
+          "ClientId": "hermod-coordinator",
+          "KeepAliveSeconds": 60,
+          "CleanSession": true,
+          "ReconnectBufferSize": 0,
+          "Tls": {
+            "UseTls": true,
+            "AllowUntrustedCertificates": true,
+            "IgnoreCertificateChainErrors": true,
+            "CaBundlePath": "/etc/hermod/tls/ca/ca.crt",
+            "ClientCertificatePath": "/etc/hermod/tls/client/tls.crt",
+            "ClientKeyPath": "/etc/hermod/tls/client/tls.key"
+          },
+          "Topics": {
+            "Zigbee": "zigbee/#",
+            "Lora": "lora/#",
+            "Bluetooth": "bluetooth/#",
+            "Wifi": "wifi/#",
+            "System": "hermod/#"
+          }
+        },
+        "Database": {
+          "ConnectionString": "Host=postgres.hermod-prod.svc.cluster.local;Port=5432;Database=hermod;Username=hermod_app;SSL Mode=Require;Trust Server Certificate=false;Root Certificate=/etc/hermod/tls/ca/ca.crt"
+        },
+        "ProtocolTranslators": {
+          "Zigbee2Mqtt": {
+            "Enabled": true,
+            "Url": "http://zigbee2mqtt.hermod-prod.svc.cluster.local:8080"
+          },
+          "Ble2Mqtt": {
+            "Enabled": true,
+            "Url": "mqtts://nanomq.hermod-prod.svc.cluster.local:8883"
+          },
+          "Wifi2Mqtt": {
+            "Enabled": true,
+            "Url": "mqtts://wifi2mqtt.hermod-prod.svc.cluster.local:8883"
+          },
+          "Lora2Mqtt": {
+            "Enabled": true,
+            "Url": "http://lora2mqtt.hermod-prod.svc.cluster.local:8080"
+          }
+        },
+        "Features": {
+          "DeviceStateTracking": true,
+          "MessagePersistence": true,
+          "RuleAuditLog": true,
+          "StatsRollup": true,
+          "RuleCache": true,
+          "MetricsEndpoint": false
+        },
+        "Storage": {
+          "Mode": "Postgres",
+          "WriteBatchSize": 256,
+          "WriteFlushIntervalMs": 500,
+          "WriteQueueCapacity": 50000,
+          "DeviceWriteBatchSize": 512,
+          "DeviceWriteFlushIntervalMs": 25,
+          "DeviceWriteQueueCapacity": 200000,
+          "MaxPoolSize": 50,
+          "MinPoolSize": 5,
+          "CommandTimeoutSeconds": 30,
+          "KeepAliveSeconds": 30,
+          "MaxAutoPrepare": 20,
+          "SkipDeviceExistenceCheck": true,
+          "FastDeviceUpserts": true
+        },
+        "Engine": {
+          "Parallelism": 0,
+          "BatchSize": 64,
+          "QueueCapacity": 10000,
+          "LogBatching": true,
+          "LogBatchSize": 100,
+          "LogBatchIntervalMs": 1000,
+          "RuleCacheRefreshSeconds": 5
+        },
+        "Seed": {
+          "Devices": false,
+          "Rules": false
+        },
+        "Dev": {
+          "Endpoints": false
+        },
+        "Security": {
+          "VaultRequireHttps": true,
+          "AllowedCorsOrigins": []
+        }
+      },
+      "Vault42": {
+        "Authority": "https://vault42.hermod-prod.svc.cluster.local:8443"
+      }
+    }

@@ -1,0 +1,102 @@
+@page "/zigbee"
+@using Hermod.Core.Configuration
+@using Microsoft.Extensions.Options
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IOptions<HermodSettings> Settings
+@inject NavigationManager Navigation
+@rendermode InteractiveServer
+
+<PageTitle>ZigBee2MQTT - Hermod</PageTitle>
+
+@if (!_isConfigured)
+{
+    <div class="d-flex justify-content-center align-items-center" style="min-height: 60vh;">
+        <div class="text-center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="currentColor" class="mb-4 text-info opacity-50" viewBox="0 0 16 16">
+                <path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/>
+            </svg>
+            <h3 class="mb-3">ZigBee2MQTT Requires Hardware</h3>
+            <p class="text-muted mb-3">
+                Zigbee2MQTT requires a physical ZigBee USB adapter to function.<br/>
+                This feature is disabled in the current deployment.
+            </p>
+            <div class="card bg-dark border-secondary mx-auto" style="max-width: 500px;">
+                <div class="card-body text-start">
+                    <h6 class="text-info mb-3">To enable Zigbee2MQTT:</h6>
+                    <ol class="text-muted small mb-0">
+                        <li class="mb-2">Connect a ZigBee USB adapter (e.g., Sonoff ZBDongle-P) to the host.</li>
+                        <li class="mb-2">Label the target node: <code>kubectl label node &lt;name&gt; hermod.io/zigbee=true</code> (Pi 5) — or on Windows with Docker Desktop, use <code>usbipd</code> to attach the dongle to WSL2 first.</li>
+                        <li class="mb-2">Redeploy against an overlay that ships Zigbee2MQTT enabled: <code>scripts/deploy-kind.sh</code> against <code>overlays/dev-hardware</code> on a Fedora + kind workstation, or <code>ansible-playbook Hermod/ansible/playbooks/update.yml</code> against the Pi 5 inventory.</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="zigbee-frame-wrap">
+        <iframe
+            @key="_frameKey"
+            src="@_proxyUrl"
+            class="zigbee-frame"
+            title="ZigBee2MQTT Dashboard">
+        </iframe>
+        <button class="btn btn-dark btn-sm zigbee-frame-refresh" @onclick="RefreshFrame" title="Refresh">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
+
+    <style>
+        /* The z2m UI already carries its own header + navigation, so the
+           coordinator page goes full-bleed under MainLayout. Negative
+           margins cancel the outer container padding so the iframe runs
+           edge-to-edge; the height math subtracts just the sticky
+           top-bar (56px) from the viewport. */
+        .zigbee-frame-wrap {
+            position: relative;
+            margin: -1.5rem -1.5rem 0 -1.5rem;
+            height: calc(100vh - 56px);
+            background: var(--hermod-bg);
+        }
+        .zigbee-frame {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            display: block;
+        }
+        .zigbee-frame-refresh {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.75rem;
+            z-index: 2;
+            opacity: 0.5;
+            transition: opacity 0.15s ease;
+        }
+        .zigbee-frame-refresh:hover {
+            opacity: 1;
+        }
+    </style>
+}
+
+@code {
+    private string _proxyUrl = "/proxy/zigbee/";
+    private bool _isConfigured = false;
+    private Guid _frameKey = Guid.NewGuid();
+
+    protected override void OnInitialized()
+    {
+        var zigbeeSettings = Settings.Value.ProtocolTranslators.Zigbee2Mqtt;
+        _isConfigured = zigbeeSettings.Enabled && !string.IsNullOrEmpty(zigbeeSettings.Url);
+    }
+
+    private void RefreshFrame()
+    {
+        _frameKey = Guid.NewGuid();
+    }
+}

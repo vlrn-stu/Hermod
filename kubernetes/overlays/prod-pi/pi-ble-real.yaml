@@ -1,0 +1,36 @@
+# Pi5 BLE: Theengs needs both the host /var/run/dbus socket AND
+# hostNetwork (HCI sockets won't see hci0 otherwise — matches Theengs's
+# docker-compose `network_mode: host`).
+# dnsPolicy ClusterFirstWithHostNet keeps cluster DNS so the bridge
+# sidecar can resolve nanomq.hermod-prod.svc.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ble2mqtt
+  namespace: hermod-prod
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: theengs-gateway
+          command: ["bash", "-c"]
+          args:
+            - |
+              source /opt/venv/bin/activate
+              exec python -m TheengsGateway -H 127.0.0.1 -P 1883 \
+                -pt bluetooth/BTtoMQTT \
+                -Lt bluetooth/LWT \
+                -D 0 \
+                -b 1
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: dbus
+              mountPath: /var/run/dbus
+      volumes:
+        - name: dbus
+          hostPath:
+            path: /var/run/dbus
+            type: Directory

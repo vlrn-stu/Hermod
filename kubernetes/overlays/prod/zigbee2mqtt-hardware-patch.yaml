@@ -1,0 +1,7 @@
+# Drops the hermod.io/zigbee node selector for single-node clusters
+# (kind, Docker Desktop) which don't label their nodes. PVC-backed
+# data volume kept — z2m persists Ember network backup + paired-device
+# DB there; emptyDir would force re-pair on every pod restart.
+
+- op: remove
+  path: /spec/template/spec/nodeSelector

@@ -1,0 +1,26 @@
+# images-public component — rewrites every locally-built image
+# reference (hermod-coordinator:latest, lora2mqtt:latest) to its
+# ghcr.io published-tag equivalent. Apply by adding this component
+# to the overlay's components: list, e.g.:
+#
+#   components:
+#     - ../../components/images-public
+#
+# `hermod.sh image-source public` does that in-place; revert with
+# `hermod.sh image-source local` (which strips the line).
+#
+# Default for prod-pi is LOCAL — operators who built the images on
+# their dev box and `microk8s ctr image import`-ed them into the Pi
+# get matching :latest refs out of the box. Public is for operators
+# pulling published images from ghcr instead.
+
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+images:
+  - name: hermod-coordinator
+    newName: ghcr.io/vlrn-stu/hermod-coordinator
+    newTag: latest
+  - name: lora2mqtt
+    newName: ghcr.io/vlrn-stu/lora2mqtt
+    newTag: latest

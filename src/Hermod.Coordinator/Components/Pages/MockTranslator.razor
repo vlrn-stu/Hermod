@@ -1,0 +1,457 @@
+@page "/mock"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IMqttService MqttService
+@inject ILogger<MockTranslator> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Mock Translator - Hermod</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-warning">Mock</span> Translator
+        </h1>
+        <p class="text-muted mb-0">Simulate IoT device messages for testing rules and integrations</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(MqttService.IsConnected ? "bg-success" : "bg-danger") fs-6">
+            @(MqttService.IsConnected ? "MQTT Connected" : "MQTT Disconnected")
+        </span>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Simulated Devices</h6>
+                <h2 class="mb-0 fw-bold">@_mockDevices.Count</h2>
+                <small class="text-white-50">Active presets</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages Sent</h6>
+                <h2 class="mb-0 fw-bold">@_messagesSent</h2>
+                <small class="text-white-50">This session</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages Received</h6>
+                <h2 class="mb-0 fw-bold">@_allMessages.Count</h2>
+                <small class="text-white-50">From MQTT</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Auto Simulation</h6>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="autoSim" @bind="AutoSimulation" style="transform: scale(1.5);" />
+                    <label class="form-check-label ms-2" for="autoSim">@(AutoSimulation ? "Running" : "Stopped")</label>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Left: Device Simulator -->
+    <div class="col-lg-7">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">Device Simulator</h5>
+                <div class="d-flex gap-2">
+                    <select class="form-select form-select-sm" style="width: auto;" @bind="_selectedProtocol">
+                        <option value="">All Protocols</option>
+                        <option value="zigbee">ZigBee</option>
+                        <option value="ble">Bluetooth</option>
+                        <option value="lora">LoRa</option>
+                        <option value="wifi">WiFi</option>
+                    </select>
+                    <button class="btn btn-sm btn-primary" @onclick="SendAllDevices" disabled="@(!MqttService.IsConnected || _isSending)">
+                        @if (_isSending)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Sending...</span>
+                        }
+                        else
+                        {
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Zm-1.833 1.89L6.637 10.07l-.215-.338a.5.5 0 0 0-.154-.154l-.338-.215 7.494-7.494 1.178-.471-.47 1.178Z"/>
+                            </svg>
+                            <span>Broadcast All</span>
+                        }
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-hover table-sm">
+                        <thead class="sticky-top" style="background-color: var(--hermod-card-bg);">
+                            <tr>
+                                <th>Device</th>
+                                <th>Protocol</th>
+                                <th>Topic</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var device in FilteredDevices)
+                            {
+                                <tr>
+                                    <td>
+                                        <strong>@device.Name</strong>
+                                        <br />
+                                        <small class="text-muted">@device.Type</small>
+                                    </td>
+                                    <td>
+                                        <span class="badge @GetProtocolBadge(device.Protocol)">@device.Protocol</span>
+                                    </td>
+                                    <td>
+                                        <code class="small">@device.Topic</code>
+                                    </td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => SendDeviceMessage(device)" disabled="@(!MqttService.IsConnected)">
+                                            Send
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Custom Message -->
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">Custom Message</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-5">
+                        <label class="form-label">Topic</label>
+                        <input type="text" class="form-control" @bind="_customTopic" placeholder="zigbee/custom_device" />
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label">Payload (JSON)</label>
+                        <input type="text" class="form-control font-monospace" @bind="_customPayload" placeholder='{"state":"ON"}' />
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button class="btn btn-primary w-100" @onclick="SendCustomMessage" disabled="@(!MqttService.IsConnected || string.IsNullOrEmpty(_customTopic))">
+                            Send
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: Received Commands Log -->
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-info" viewBox="0 0 16 16">
+                        <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                        <path d="M3 5.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zM3 8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9A.5.5 0 0 1 3 8zm0 2.5a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5z"/>
+                    </svg>
+                    Message Log
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearMessages">Clear</button>
+            </div>
+            <div class="card-body p-0">
+                <div style="height: 500px; overflow-y: auto;">
+                    @{
+                        MqttMessage[] snapshot;
+                        lock (_allMessages) { snapshot = _allMessages.ToArray(); }
+                    }
+                    @if (snapshot.Any())
+                    {
+                        @foreach (var msg in snapshot.OrderByDescending(m => m.ReceivedAt).Take(50))
+                        {
+                            <div class="border-bottom p-3">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <code class="text-primary small">@msg.Topic</code>
+                                    <small class="text-muted">@msg.ReceivedAt.ToLocalTime().ToString("HH:mm:ss")</small>
+                                </div>
+                                <pre class="bg-light rounded p-2 mb-0 small" style="max-height: 100px; overflow: auto;">@FormatJson(msg.Payload)</pre>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted py-5">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                                <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                                <path d="M10.97 4.97a.75.75 0 0 1 1.071 1.05l-3.992 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.235.235 0 0 1 .02-.022z"/>
+                            </svg>
+                            <p class="mb-1">No messages received yet</p>
+                            <small>MQTT messages will appear here</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private readonly List<MockDevice> _mockDevices = new();
+    private readonly List<MqttMessage> _allMessages = new();
+    private int _messagesSent = 0;
+    private bool _autoSimulation = false;
+    private bool _isSending = false;
+    private string _selectedProtocol = "";
+    private string _customTopic = "";
+    private string _customPayload = "";
+    private Timer? _autoSimTimer;
+    private Random _random = new();
+
+    private bool AutoSimulation
+    {
+        get => _autoSimulation;
+        set
+        {
+            _autoSimulation = value;
+            if (value)
+            {
+                StartAutoSimulation();
+            }
+            else
+            {
+                StopAutoSimulation();
+            }
+        }
+    }
+
+    private IEnumerable<MockDevice> FilteredDevices => _mockDevices
+        .Where(d => string.IsNullOrEmpty(_selectedProtocol) || d.Protocol.Equals(_selectedProtocol, StringComparison.OrdinalIgnoreCase));
+
+    protected override void OnInitialized()
+    {
+        InitializeMockDevices();
+        MqttService.MessageReceived += HandleMessage;
+    }
+
+    private void StartAutoSimulation()
+    {
+        _autoSimTimer?.Dispose();
+        _autoSimTimer = new Timer(
+            _ => _ = InvokeAsync(async () =>
+            {
+                if (!MqttService.IsConnected || _mockDevices.Count == 0) return;
+
+                try
+                {
+                    var device = _mockDevices[_random.Next(_mockDevices.Count)];
+                    await MqttService.PublishAsync(device.Topic, device.Payload);
+                    _messagesSent++;
+                    StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "Auto-sim publish failed");
+                }
+            }),
+            state: null,
+            dueTime: TimeSpan.Zero,
+            period: TimeSpan.FromSeconds(5));
+    }
+
+    private void StopAutoSimulation()
+    {
+        _autoSimTimer?.Dispose();
+        _autoSimTimer = null;
+    }
+
+    private void HandleMessage(object? sender, MqttMessage message)
+    {
+        // Capture ALL messages
+        lock (_allMessages)
+        {
+            _allMessages.Add(message);
+            if (_allMessages.Count > 100)
+            {
+                _allMessages.RemoveAt(0);
+            }
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void InitializeMockDevices()
+    {
+        _mockDevices.AddRange(new[]
+        {
+            // ZigBee Devices - using zigbee2mqtt topic format (matches real Zigbee2MQTT)
+            new MockDevice("Living Room Light", "zigbee", "light", "zigbee/living_room_light",
+                """{"state":"ON","brightness":200,"color_temp":370,"linkquality":120}"""),
+            new MockDevice("Kitchen Light", "zigbee", "light", "zigbee/kitchen_light",
+                """{"state":"OFF","brightness":0,"color_temp":250,"linkquality":95}"""),
+            new MockDevice("Motion Sensor", "zigbee", "sensor", "zigbee/motion_sensor_hall",
+                """{"occupancy":true,"battery":85,"voltage":2900,"linkquality":110}"""),
+            // Temperature Sensor - triggers Rule 1 (ZigBee Temp to WiFi Display)
+            new MockDevice("Temperature Sensor", "zigbee", "sensor", "zigbee/temp_sensor_bedroom",
+                """{"temperature":22.5,"humidity":45,"battery":92,"linkquality":105}"""),
+            // High Temperature - triggers Rule 2 (High Temperature Alert) - temp > 30
+            new MockDevice("Hot Room Sensor", "zigbee", "sensor", "zigbee/temp_sensor_server_room",
+                """{"temperature":35.8,"humidity":30,"battery":88,"linkquality":100}"""),
+            // Door Contact Open - triggers Rule 5 (Door Open Notification) - contact = false
+            new MockDevice("Door Contact (Open)", "zigbee", "sensor", "zigbee/door_contact_front",
+                """{"contact":false,"battery":78,"voltage":2850,"linkquality":88}"""),
+            // Door Contact Closed
+            new MockDevice("Door Contact (Closed)", "zigbee", "sensor", "zigbee/door_contact_back",
+                """{"contact":true,"battery":65,"voltage":2800,"linkquality":92}"""),
+            new MockDevice("Smart Plug", "zigbee", "switch", "zigbee/smart_plug_office",
+                """{"state":"ON","power":45.2,"voltage":230,"current":0.19,"linkquality":115}"""),
+            // Low Battery Device - triggers Rule 6 (Low Battery Alert) - battery < 20
+            new MockDevice("Old Sensor (Low Batt)", "zigbee", "sensor", "zigbee/old_motion_sensor",
+                """{"occupancy":false,"battery":15,"voltage":2400,"linkquality":60}"""),
+            // Zigbee2MQTT bridge messages
+            new MockDevice("Bridge State", "zigbee", "bridge", "zigbee/bridge/state",
+                """{"state":"online"}"""),
+            new MockDevice("Bridge Info", "zigbee", "bridge", "zigbee/bridge/info",
+                """{"version":"1.40.0","commit":"unknown","coordinator":{"type":"zStack3x0","meta":{"revision":20240315}},"network":{"channel":11,"pan_id":6754},"config":{"homeassistant":true,"permit_join":false}}"""),
+            new MockDevice("Bridge Devices (Discovery)", "zigbee", "bridge", "zigbee/bridge/devices",
+                """[{"ieee_address":"0x00124b0025a1b2c3","type":"Router","friendly_name":"living_room_light","supported":true,"disabled":false,"definition":{"model":"LED1545G12","vendor":"IKEA","description":"TRADFRI LED bulb E26/E27 980 lumen"},"power_source":"Mains (single phase)","model_id":"TRADFRI bulb E27 WS opal 980lm","interview_completed":true},{"ieee_address":"0x00158d0004238a12","type":"EndDevice","friendly_name":"motion_sensor_hall","supported":true,"disabled":false,"definition":{"model":"RTCGQ11LM","vendor":"Xiaomi","description":"Aqara human body movement and illuminance sensor"},"power_source":"Battery","model_id":"lumi.sensor_motion.aq2","interview_completed":true},{"ieee_address":"0x00158d0004512b34","type":"EndDevice","friendly_name":"temp_sensor_bedroom","supported":true,"disabled":false,"definition":{"model":"WSDCGQ11LM","vendor":"Xiaomi","description":"Aqara temperature, humidity and pressure sensor"},"power_source":"Battery","model_id":"lumi.weather","interview_completed":true}]"""),
+
+            // Bluetooth Devices
+            new MockDevice("Xiaomi Thermometer", "bluetooth", "sensor", "bluetooth/xiaomi_thermo_01",
+                """{"temperature":21.3,"humidity":52,"battery":67}"""),
+            new MockDevice("Heart Rate Monitor", "bluetooth", "wearable", "bluetooth/heart_rate_01",
+                """{"heartRate":72,"rr_interval":833,"battery":45}"""),
+            new MockDevice("Smart Scale", "bluetooth", "scale", "bluetooth/smart_scale_01",
+                """{"weight":75.5,"impedance":480}"""),
+            new MockDevice("Fitness Tracker", "bluetooth", "wearable", "bluetooth/fitness_tracker_01",
+                """{"steps":8542,"calories":320,"distance":6.2,"battery":55}"""),
+
+            // LoRa Devices
+            new MockDevice("Outdoor Weather", "lora", "sensor", "lora/weather_outdoor_01",
+                """{"temperature":18.5,"humidity":65,"pressure":1013,"rssi":-85,"snr":7.5}"""),
+            new MockDevice("Soil Moisture", "lora", "sensor", "lora/soil_moisture_01",
+                """{"moisture":42,"temperature":16.2,"battery":88,"rssi":-92,"snr":6.2}"""),
+            new MockDevice("GPS Tracker", "lora", "tracker", "lora/gps_tracker_01",
+                """{"lat":48.1486,"lon":17.1077,"altitude":145,"speed":0,"battery":72,"rssi":-78}"""),
+            new MockDevice("Water Level", "lora", "sensor", "lora/water_level_tank",
+                """{"level":85,"volume":425,"battery":95,"rssi":-88,"snr":8.1}"""),
+
+            // WiFi Devices
+            new MockDevice("ESP32 Relay", "wifi", "switch", "wifi/esp32_relay_garage",
+                """{"state":"OFF","rssi":-62,"uptime":86400}"""),
+            new MockDevice("IP Camera", "wifi", "camera", "wifi/ip_camera_front",
+                """{"motion":false,"recording":true,"storage_used":45,"rssi":-55}"""),
+            new MockDevice("Air Quality", "wifi", "sensor", "wifi/air_quality_living",
+                """{"pm25":12,"pm10":18,"co2":650,"voc":125,"rssi":-58}"""),
+            new MockDevice("Smart Thermostat", "wifi", "hvac", "wifi/thermostat_main",
+                """{"current_temp":21.5,"target_temp":22,"mode":"heat","humidity":48,"rssi":-52}""")
+        });
+    }
+
+    private async Task SendDeviceMessage(MockDevice device)
+    {
+        if (!MqttService.IsConnected) return;
+
+        try
+        {
+            await MqttService.PublishAsync(device.Topic, device.Payload);
+            _messagesSent++;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to publish mock message to {Topic}", device.Topic);
+        }
+    }
+
+    private async Task SendAllDevices()
+    {
+        if (_isSending) return;
+
+        _isSending = true;
+        StateHasChanged();
+
+        try
+        {
+            foreach (var device in FilteredDevices)
+            {
+                await SendDeviceMessage(device);
+                await Task.Delay(50); // Small delay between messages
+            }
+        }
+        finally
+        {
+            _isSending = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SendCustomMessage()
+    {
+        if (!MqttService.IsConnected || string.IsNullOrEmpty(_customTopic)) return;
+
+        var payload = string.IsNullOrEmpty(_customPayload) ? "{}" : _customPayload;
+        try
+        {
+            await MqttService.PublishAsync(_customTopic, payload);
+            _messagesSent++;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Failed to publish custom message to {Topic}", _customTopic);
+        }
+    }
+
+    private void ClearMessages()
+    {
+        lock (_allMessages)
+        {
+            _allMessages.Clear();
+        }
+    }
+
+    private static string GetProtocolBadge(string protocol) => protocol.ToLower() switch
+    {
+        "zigbee" => "bg-success",
+        "ble" or "bluetooth" => "bg-info",
+        "lora" => "bg-warning text-dark",
+        "wifi" => "bg-primary",
+        _ => "bg-secondary"
+    };
+
+    private static string FormatJson(string payload)
+    {
+        try
+        {
+            var obj = System.Text.Json.JsonSerializer.Deserialize<object>(payload);
+            return System.Text.Json.JsonSerializer.Serialize(obj, new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+        }
+        catch
+        {
+            return payload;
+        }
+    }
+
+    public void Dispose()
+    {
+        MqttService.MessageReceived -= HandleMessage;
+        _autoSimTimer?.Dispose();
+    }
+
+    private record MockDevice(string Name, string Protocol, string Type, string Topic, string Payload);
+}

@@ -1,0 +1,14 @@
+# Pi5 has real Waveshare LoRa HAT on /dev/ttyACM0 — flip MockMode off.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lora2mqtt
+  namespace: hermod-prod
+spec:
+  template:
+    spec:
+      containers:
+        - name: lora2mqtt
+          env:
+            - name: LoRa__MockMode
+              value: "false"

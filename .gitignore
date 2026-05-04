@@ -1,0 +1,57 @@
+# Operator secrets — must never land in git.
+hermod-prod.env
+
+# Ansible inventory — operators copy hosts.yml.example to hosts.yml and fill
+# in real IPs / SSH details. The .example template is committed; the real
+# file is per-deployment and stays local.
+ansible/inventory/hosts.yml
+
+# pi-installer per-deployment config — operators copy from
+# config.example.yaml / hermod-pi.conf.example.
+lib/pi-installer/config.yaml
+lib/pi-installer/hermod-pi.conf
+
+# .NET build outputs
+**/bin/
+**/obj/
+*.user
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Test outputs (regenerated on every run)
+tests/results/
+tests/.overlays/
+tests/.venv/
+tests/.playwright/
+
+# Node / frontend build artifacts
+node_modules/
+dist/
+*.log
+
+# Local internal-CA material lives outside the repo, but if anyone
+# accidentally points HERMOD_CERT_DIR at the tree, do not commit it.
+.hermod-prod-certs/
+
+# IDE / editor scratch
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# kustomize / k8s convenience scratch
+*.tmp.yaml
+
+tests/tui-harness/*.md
+*.mimir.*

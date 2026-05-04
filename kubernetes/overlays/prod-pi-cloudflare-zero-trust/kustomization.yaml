@@ -1,0 +1,51 @@
+# prod-pi-cloudflare-zero-trust — ACTIVE Cloudflare Tunnel + Zero Trust gate.
+#
+# !!! THIS OVERLAY EXPOSES THE COORDINATOR PUBLICLY !!!
+# !!! BEHIND A REQUIRED CLOUDFLARE ACCESS POLICY     !!!
+#
+# This overlay layers Cloudflare Access (Zero Trust) on top of the
+# active Cloudflare Tunnel overlay. Browsers reaching
+# hermod.<your-domain> are first authenticated by Cloudflare's identity
+# provider (Google / GitHub / OTP / SAML / etc.) and matched against an
+# Access policy you define in the Cloudflare dashboard. Hermod's own
+# auth still runs on top.
+#
+# "Must be explicitly set" enforcement: the cloudflared Deployment now
+# carries a fail-closed init container that refuses to start while
+# zero-trust-marker.yaml still contains placeholder values. You cannot
+# apply this overlay without first editing the marker.
+#
+# Apply only when:
+#   * The parked overlay `prod-pi-letsencrypt-cloudflare-tunnel` has
+#     been applied and the cloudflared-token Secret is present.
+#   * A Cloudflare Access Application has been created in the dashboard
+#     for hermod.<your-domain> with at least one allow policy attached.
+#   * You have edited zero-trust-marker.yaml to substitute your real
+#     Application AUD tag and team domain.
+#
+# Deploy: `kubectl apply -k kubernetes/overlays/prod-pi-cloudflare-zero-trust/`
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+resources:
+  - ../prod-pi-letsencrypt-cloudflare-tunnel
+  - zero-trust-marker.yaml
+
+patches:
+  # Scale cloudflared from 0 to 2 — file duplicated from the active
+  # sibling because kustomize requires patches to live within the
+  # loading overlay root.
+  - path: cloudflared-scale-up.yaml
+    target:
+      kind: Deployment
+      name: cloudflared
+  # Inject the fail-closed init container that gates the marker.
+  - path: cloudflared-zt-init.yaml
+    target:
+      kind: Deployment
+      name: cloudflared
+  # HSTS preload comes from the parent overlay (parked tunnel already
+  # patches Coord with the same env vars); no need to re-apply here.

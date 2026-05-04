@@ -1,0 +1,431 @@
+@using Hermod.Core.Configuration
+@using Microsoft.Extensions.Options
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject ILogger<NavMenu> Logger
+@inject IOptions<HermodSettings> HermodOptions
+@rendermode InteractiveServer
+
+<div class="sidebar-container">
+    <div class="top-row">
+        <div class="navbar-brand">
+            <img src="logo_compact.png" alt="Hermod" class="brand-logo" />
+            <span class="brand-text">Hermod</span>
+        </div>
+        <button class="theme-toggle redact-toggle" @onclick="ToggleRedact" title="Toggle redact mode (for screenshots)">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="@(_isRedactMode ? "d-none" : "")">
+                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="@(_isRedactMode ? "" : "d-none")">
+                <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/>
+            </svg>
+        </button>
+        <button class="theme-toggle" @onclick="ToggleTheme" title="Toggle theme">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="@(_isDarkTheme ? "" : "d-none")">
+                <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="@(_isDarkTheme ? "d-none" : "")">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+        </button>
+        <input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+    </div>
+
+    <div class="nav-scrollable">
+        <nav class="flex-column">
+            <div class="nav-section"><small>MAIN</small></div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    </span>
+                    Dashboard
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="devices">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+                    </span>
+                    Devices
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="rules">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </span>
+                    Rules
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="messages">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    </span>
+                    Messages
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="topology">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><line x1="12" y1="8" x2="12" y2="12"/><circle cx="6" cy="19" r="3"/><circle cx="18" cy="19" r="3"/><line x1="12" y1="12" x2="6" y2="16"/><line x1="12" y1="12" x2="18" y2="16"/></svg>
+                    </span>
+                    Topology
+                </NavLink>
+            </div>
+
+            <div class="nav-section"><small>PROTOCOLS</small></div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="zigbee">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/><path d="M22 4v16"/></svg>
+                    </span>
+                    ZigBee
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="lora">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/></svg>
+                    </span>
+                    LoRa
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="bluetooth">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></svg>
+                    </span>
+                    Bluetooth
+                </NavLink>
+            </div>
+
+            @if (HermodOptions.Value.Dev.Endpoints)
+            {
+                <div class="nav-section"><small>DEVELOPMENT</small></div>
+                <div class="nav-item">
+                    <NavLink class="nav-link" href="mock" Match="NavLinkMatch.All">
+                        <span class="nav-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                        </span>
+                        Mock Translator
+                    </NavLink>
+                </div>
+                <div class="nav-item">
+                    <NavLink class="nav-link" href="mock/zigbee" Match="NavLinkMatch.All">
+                        <span class="nav-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="12" cy="12" r="4"/><line x1="4" y1="12" x2="8" y2="12"/><line x1="16" y1="12" x2="20" y2="12"/><line x1="12" y1="4" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="20"/></svg>
+                        </span>
+                        ZigBee Mock
+                    </NavLink>
+                </div>
+                <div class="nav-item">
+                    <NavLink class="nav-link" href="mock/lora" Match="NavLinkMatch.All">
+                        <span class="nav-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/></svg>
+                        </span>
+                        LoRa Mock
+                    </NavLink>
+                </div>
+            }
+
+            <div class="nav-section"><small>SYSTEM</small></div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="health">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                    </span>
+                    Health &amp; Metrics
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="backup">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                    </span>
+                    Backup
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                <NavLink class="nav-link" href="settings">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </span>
+                    Settings
+                </NavLink>
+            </div>
+            <div class="nav-item">
+                @* Plain anchor (not NavLink) so the browser issues a real
+                   GET that carries the HttpOnly hermod_session/hermod_token
+                   cookies; AuthProxyController.LogoutRedirect clears them
+                   server-side and 302s back to /login. Bypasses Blazor
+                   SignalR so cookie clearing actually reaches the browser. *@
+                <a class="nav-link" href="/api/auth/logout-redirect">
+                    <span class="nav-icon">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    </span>
+                    Logout
+                </a>
+            </div>
+        </nav>
+    </div>
+</div>
+
+<style>
+    .sidebar-container {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--hermod-sidebar-bg);
+    }
+
+    .navbar-toggler {
+        appearance: none;
+        cursor: pointer;
+        width: 3rem;
+        height: 2.25rem;
+        color: white;
+        position: absolute;
+        top: 0.625rem;
+        right: 1rem;
+        border: 1px solid rgba(0, 255, 65, 0.2);
+        background: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='%2300FF41' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e") no-repeat center/1.5rem rgba(0, 255, 65, 0.05);
+        border-radius: 8px;
+        z-index: 10;
+        transition: all 0.2s ease;
+    }
+
+    .navbar-toggler:hover {
+        background-color: rgba(0, 255, 65, 0.1);
+        border-color: rgba(0, 255, 65, 0.4);
+    }
+
+    .navbar-toggler:checked {
+        background-color: rgba(0, 255, 65, 0.15);
+    }
+
+    .top-row {
+        height: 3.5rem;
+        display: flex;
+        align-items: center;
+        background: var(--hermod-sidebar-bg);
+        border-bottom: 1px solid rgba(0, 255, 65, 0.15);
+        padding: 0 1rem;
+        flex-shrink: 0;
+    }
+
+    .navbar-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        text-decoration: none;
+    }
+
+    .brand-logo {
+        width: 32px;
+        height: 32px;
+        object-fit: contain;
+        border-radius: 6px;
+    }
+
+    .brand-text {
+        font-size: 1.125rem;
+        font-weight: 700;
+        color: #00FF41;
+        letter-spacing: 0.5px;
+    }
+
+    .theme-toggle {
+        background: rgba(0, 255, 65, 0.08);
+        border: 1px solid rgba(0, 255, 65, 0.2);
+        border-radius: 8px;
+        padding: 0.375rem 0.5rem;
+        color: #00FF41;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        margin-left: auto;
+        margin-right: 4rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .theme-toggle:hover {
+        background: rgba(0, 255, 65, 0.15);
+        border-color: rgba(0, 255, 65, 0.4);
+    }
+
+    .nav-icon {
+        margin-right: 0.75rem;
+        opacity: 0.7;
+        flex-shrink: 0;
+        transition: opacity 0.15s ease;
+        display: flex;
+        align-items: center;
+    }
+
+    .nav-section {
+        padding: 1.25rem 1rem 0.5rem 1rem;
+        margin-top: 0.25rem;
+    }
+
+    .nav-section:first-child {
+        padding-top: 0.75rem;
+        margin-top: 0;
+    }
+
+    .nav-section small {
+        color: rgba(0, 255, 65, 0.4);
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+    }
+
+    .nav-item {
+        font-size: 0.875rem;
+        padding: 0.125rem 0.5rem;
+    }
+
+    .nav-item .nav-link {
+        color: rgba(255, 255, 255, 0.7);
+        background: none;
+        border: none;
+        border-radius: 8px;
+        height: 2.5rem;
+        display: flex;
+        align-items: center;
+        line-height: 2.5rem;
+        width: 100%;
+        transition: all 0.15s ease;
+        padding: 0 0.75rem;
+        text-decoration: none;
+    }
+
+    .nav-item a.active {
+        background: linear-gradient(135deg, #00FF41 0%, #00CC33 100%);
+        color: #000000;
+        box-shadow: 0 4px 16px rgba(0, 255, 65, 0.3);
+    }
+
+    .nav-item a.active .nav-icon {
+        opacity: 1;
+        color: #000000;
+    }
+
+    .nav-item .nav-link:hover {
+        background-color: rgba(0, 255, 65, 0.1);
+        color: #ffffff;
+    }
+
+    .nav-item .nav-link:hover .nav-icon {
+        opacity: 1;
+        color: #00FF41;
+    }
+
+    .nav-scrollable {
+        display: none;
+        background: var(--hermod-sidebar-bg);
+        flex: 1;
+        overflow-y: auto;
+    }
+
+    .navbar-toggler:checked ~ .nav-scrollable {
+        display: block;
+    }
+
+    /* Scrollbar styling */
+    .nav-scrollable::-webkit-scrollbar {
+        width: 4px;
+    }
+
+    .nav-scrollable::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .nav-scrollable::-webkit-scrollbar-thumb {
+        background: rgba(0, 255, 65, 0.2);
+        border-radius: 2px;
+    }
+
+    .nav-scrollable::-webkit-scrollbar-thumb:hover {
+        background: rgba(0, 255, 65, 0.4);
+    }
+
+    @@media (min-width: 641px) {
+        .navbar-toggler {
+            display: none;
+        }
+
+        .theme-toggle {
+            margin-right: 0;
+        }
+
+        .nav-scrollable {
+            display: block;
+            height: calc(100vh - 3.5rem);
+        }
+    }
+</style>
+
+@code {
+    private bool _isDarkTheme = true;
+    private bool _isRedactMode;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        try
+        {
+            var savedTheme = await JS.InvokeAsync<string>("localStorage.getItem", "hermod_theme");
+            _isDarkTheme = savedTheme != "light";
+            await JS.InvokeVoidAsync("setHermodTheme", !_isDarkTheme);
+
+            var savedRedact = await JS.InvokeAsync<string>("localStorage.getItem", "hermod_redact");
+            _isRedactMode = savedRedact == "1";
+            await JS.InvokeVoidAsync("setHermodRedact", _isRedactMode);
+            StateHasChanged();
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit torn down mid-render; nothing to do.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Failed to read saved UI prefs from browser storage");
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        _isDarkTheme = !_isDarkTheme;
+        try
+        {
+            await JS.InvokeVoidAsync("setHermodTheme", !_isDarkTheme);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Theme toggle JS interop failed");
+        }
+    }
+
+    private async Task ToggleRedact()
+    {
+        _isRedactMode = !_isRedactMode;
+        try
+        {
+            await JS.InvokeVoidAsync("setHermodRedact", _isRedactMode);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Redact toggle JS interop failed");
+        }
+    }
+}

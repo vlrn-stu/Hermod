@@ -1,0 +1,9 @@
+# Scale the parked cloudflared Deployment from 0 to 2 replicas. Two
+# concurrent connections give Cloudflare a load-balanced pair so a
+# single pod restart does not drop the public hostname.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+spec:
+  replicas: 2

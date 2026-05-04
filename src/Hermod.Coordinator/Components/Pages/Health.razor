@@ -1,0 +1,746 @@
+@page "/health"
+@page "/metrics-dashboard"
+@using System.Globalization
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Configuration
+@using Hermod.Core.Telemetry
+@using Microsoft.Extensions.Options
+@using System.Diagnostics
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IMqttService MqttService
+@inject IDeviceService DeviceService
+@inject IRulesService RulesService
+@inject IProtocolTranslatorHealth TranslatorHealth
+@inject IOptions<HermodSettings> Settings
+@inject HermodMetrics HermodMetrics
+@inject IJSRuntime JS
+@inject ILogger<Health> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Health &amp; Metrics - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_errorMessage</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="RefreshHealth">Retry</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <h1 class="mb-1 fw-bold">Health &amp; Metrics</h1>
+        <p class="text-muted mb-0">Real-time system status, diagnostics, and Prometheus counters</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(_overallHealth == "Healthy" ? "bg-success" : _overallHealth == "Degraded" ? "bg-warning text-dark" : "bg-danger") fs-6 px-3 py-2">
+            @_overallHealth
+        </span>
+        <button class="btn btn-outline-primary btn-sm" @onclick="RefreshAll">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+            </svg>
+            Refresh
+        </button>
+    </div>
+</div>
+
+<ul class="nav nav-tabs mb-4">
+    <li class="nav-item">
+        <button type="button" class="nav-link @(_activeTab == "health" ? "active" : "")" @onclick='() => SetTab("health")'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16"><path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8z"/></svg>
+            Health
+        </button>
+    </li>
+    <li class="nav-item">
+        <button type="button" class="nav-link @(_activeTab == "metrics" ? "active" : "")" @onclick='() => SetTab("metrics")'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16"><path d="M4 11H2v3h2v-3zm5-4H7v7h2V7zm5-5v12h-2V2h2zm-2-1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1h-2zM6 7a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm-5 4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-3z"/></svg>
+            Metrics @if (_metrics.Count > 0) { <span class="badge bg-primary ms-1">@_metrics.Count</span> }
+        </button>
+    </li>
+</ul>
+
+<style>
+    .metric-tile {
+        padding: 0.9rem 1rem;
+        border: 1px solid var(--bs-border-color, rgba(255,255,255,0.08));
+        border-radius: 0.5rem;
+        background: rgba(255, 255, 255, 0.02);
+        transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .metric-tile:hover {
+        border-color: #00FF42;
+        background: rgba(0, 255, 66, 0.05);
+    }
+    .metric-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.1;
+    }
+    .metric-name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.8rem;
+        opacity: 0.85;
+        word-break: break-all;
+        margin-top: 0.25rem;
+    }
+    .metric-help {
+        font-size: 0.75rem;
+        color: var(--bs-secondary-color, #6c757d);
+        margin-top: 0.35rem;
+        line-height: 1.3;
+    }
+    .metric-type {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+</style>
+
+@if (_activeTab == "metrics")
+{
+    <div>
+        @if (_metricsError is not null)
+        {
+            <div class="alert alert-danger">@_metricsError</div>
+        }
+
+        @foreach (var group in GroupedMetrics())
+        {
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0 fw-semibold">@group.Key</h5>
+                    <span class="text-muted small">@group.Count() series</span>
+                </div>
+                <div class="card-body pt-0">
+                    <div class="row g-3">
+                        @foreach (var metric in group)
+                        {
+                            <div class="col-md-6 col-lg-4 col-xl-3">
+                                <div class="metric-tile h-100">
+                                    <div class="d-flex justify-content-between align-items-start mb-1">
+                                        <span class="badge @TypeBadge(metric.Type) metric-type">@metric.Type</span>
+                                        <span class="metric-value">@FormatValue(metric.Value)</span>
+                                    </div>
+                                    <div class="metric-name">@ShortName(metric.Name)</div>
+                                    @if (!string.IsNullOrEmpty(metric.Help))
+                                    {
+                                        <div class="metric-help">@metric.Help</div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+
+        @if (_metrics.Count == 0 && _metricsError is null)
+        {
+            <div class="text-center text-muted py-5">
+                <p>No metrics reported yet — Prometheus endpoint returned an empty response.</p>
+            </div>
+        }
+    </div>
+}
+else
+{
+
+<!-- Overview Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6 class="text-muted mb-2">MQTT Broker</h6>
+                        <h4 class="mb-0 fw-bold">@(MqttService.IsConnected ? "Connected" : "Disconnected")</h4>
+                        <small class="text-muted">@Settings.Value.Mqtt.Host:@Settings.Value.Mqtt.Port</small>
+                    </div>
+                    <div class="rounded-circle p-2 @(MqttService.IsConnected ? "bg-success" : "bg-danger") bg-opacity-10">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="@(MqttService.IsConnected ? "text-success" : "text-danger")" viewBox="0 0 16 16">
+                            <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4Zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2Z"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6 class="text-muted mb-2">Devices</h6>
+                        <h4 class="mb-0 fw-bold">@_onlineDevices / @_totalDevices</h4>
+                        <small class="text-muted">Online / Total</small>
+                    </div>
+                    <div class="rounded-circle p-2 bg-primary bg-opacity-10">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="text-primary" viewBox="0 0 16 16">
+                            <rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6 class="text-muted mb-2">Active Rules</h6>
+                        <h4 class="mb-0 fw-bold">@_activeRules / @_totalRules</h4>
+                        <small class="text-muted">Active / Total</small>
+                    </div>
+                    <div class="rounded-circle p-2 bg-warning bg-opacity-10">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="text-warning" viewBox="0 0 16 16">
+                            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                            <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h6 class="text-muted mb-2">Uptime</h6>
+                        <h4 class="mb-0 fw-bold">@_uptime</h4>
+                        <small class="text-muted">Since startup</small>
+                    </div>
+                    <div class="rounded-circle p-2 bg-success bg-opacity-10">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" class="text-success" viewBox="0 0 16 16">
+                            <path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/>
+                            <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Services Status -->
+    <div class="col-lg-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-primary" viewBox="0 0 16 16">
+                        <path d="M6 9a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3A.5.5 0 0 1 6 9zM3.854 4.146a.5.5 0 1 0-.708.708L4.793 6.5 3.146 8.146a.5.5 0 1 0 .708.708l2-2a.5.5 0 0 0 0-.708l-2-2z"/>
+                        <path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2H2zm12 1a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h12z"/>
+                    </svg>
+                    Services Status
+                </h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    <div class="list-group-item d-flex justify-content-between align-items-center py-3">
+                        <div class="d-flex align-items-center">
+                            <div class="rounded-circle p-2 me-3 @(MqttService.IsConnected ? "bg-success" : "bg-danger") bg-opacity-10">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="@(MqttService.IsConnected ? "text-success" : "text-danger")" viewBox="0 0 16 16">
+                                    <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4Z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>MQTT Service</strong>
+                                <div class="text-muted small">Message broker connection</div>
+                            </div>
+                        </div>
+                        <span class="badge @(MqttService.IsConnected ? "bg-success" : "bg-danger")">
+                            @(MqttService.IsConnected ? "Healthy" : "Unhealthy")
+                        </span>
+                    </div>
+                    <div class="list-group-item d-flex justify-content-between align-items-center py-3">
+                        <div class="d-flex align-items-center">
+                            <div class="rounded-circle p-2 me-3 bg-success bg-opacity-10">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="text-success" viewBox="0 0 16 16">
+                                    <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1H0V4Zm0 3v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7H0Zm12 2v2h2V9h-2Z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>Database</strong>
+                                <div class="text-muted small">@Settings.Value.Database.DatabaseName</div>
+                            </div>
+                        </div>
+                        <span class="badge @(_databaseHealthy ? "bg-success" : "bg-danger")">
+                            @(_databaseHealthy ? "Healthy" : "Unreachable")
+                        </span>
+                    </div>
+                    <div class="list-group-item d-flex justify-content-between align-items-center py-3">
+                        <div class="d-flex align-items-center">
+                            <div class="rounded-circle p-2 me-3 @(_rulesServiceHealthy ? "bg-success" : "bg-warning") bg-opacity-10">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="@(_rulesServiceHealthy ? "text-success" : "text-warning")" viewBox="0 0 16 16">
+                                    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44"/>
+                                    <circle cx="12" cy="12" r="3"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>Rules Engine</strong>
+                                <div class="text-muted small">@_activeRules active rules</div>
+                            </div>
+                        </div>
+                        <span class="badge @(_rulesServiceHealthy ? "bg-success" : "bg-warning")">
+                            @(_rulesServiceHealthy ? "Running" : "Load failed")
+                        </span>
+                    </div>
+                    <div class="list-group-item d-flex justify-content-between align-items-center py-3">
+                        <div class="d-flex align-items-center">
+                            <div class="rounded-circle p-2 me-3 @(_deviceServiceHealthy ? "bg-success" : "bg-warning") bg-opacity-10">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="@(_deviceServiceHealthy ? "text-success" : "text-warning")" viewBox="0 0 16 16">
+                                    <rect width="7" height="9" x="3" y="3" rx="1"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>Device Service</strong>
+                                <div class="text-muted small">@_totalDevices registered devices</div>
+                            </div>
+                        </div>
+                        <span class="badge @(_deviceServiceHealthy ? "bg-success" : "bg-warning")">
+                            @(_deviceServiceHealthy ? "Running" : "Load failed")
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Protocol Adapters -->
+    <div class="col-lg-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-warning" viewBox="0 0 16 16">
+                        <path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/>
+                    </svg>
+                    Protocol Adapters
+                </h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    @TranslatorRow("ZigBee2MQTT", _zigbeeHealth)
+                    @TranslatorRow("LoRa2MQTT", _loraHealth)
+                    @TranslatorRow("BLE2MQTT", _bleHealth)
+                    @TranslatorRow("WiFi2MQTT", _wifiHealth)
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- System Resources -->
+<div class="row g-4 mt-0">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-info" viewBox="0 0 16 16">
+                        <path d="M5 0a.5.5 0 0 1 .5.5V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2h1V.5a.5.5 0 0 1 1 0V2A2.5 2.5 0 0 1 14 4.5h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14v1h1.5a.5.5 0 0 1 0 1H14a2.5 2.5 0 0 1-2.5 2.5v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14h-1v1.5a.5.5 0 0 1-1 0V14A2.5 2.5 0 0 1 2 11.5H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2v-1H.5a.5.5 0 0 1 0-1H2A2.5 2.5 0 0 1 4.5 2V.5A.5.5 0 0 1 5 0zm-.5 3A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13h7a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 11.5 3h-7zM5 6.5A1.5 1.5 0 0 1 6.5 5h3A1.5 1.5 0 0 1 11 6.5v3A1.5 1.5 0 0 1 9.5 11h-3A1.5 1.5 0 0 1 5 9.5v-3zM6.5 6a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3z"/>
+                    </svg>
+                    System Resources
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-4">
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">Working Set (Process)</h6>
+                        <h4 class="mb-0 fw-bold">@_memoryUsed MB</h4>
+                        <small class="text-muted">GC heap: @_gcHeapMb MB</small>
+                    </div>
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">Process Threads</h6>
+                        <h4 class="mb-0 fw-bold">@_threadCount</h4>
+                        <small class="text-muted">Active threads</small>
+                    </div>
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">GC Collections</h6>
+                        <h4 class="mb-0 fw-bold">@_gcCollections</h4>
+                        <small class="text-muted">Gen 0 + Gen 1 + Gen 2</small>
+                    </div>
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">.NET Runtime</h6>
+                        <h4 class="mb-0 fw-bold">@_dotnetVersion</h4>
+                        <small class="text-muted">Framework version</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- MQTT Topics Subscribed -->
+<div class="row g-4 mt-0">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-transparent border-0">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-success" viewBox="0 0 16 16">
+                        <path d="M0 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V4Zm2-1a1 1 0 0 0-1 1v.217l7 4.2 7-4.2V4a1 1 0 0 0-1-1H2Zm13 2.383-4.708 2.825L15 11.105V5.383Zm-.034 6.876-5.64-3.471L8 9.583l-1.326-.795-5.64 3.47A1 1 0 0 0 2 13h12a1 1 0 0 0 .966-.741ZM1 11.105l4.708-2.897L1 5.383v5.722Z"/>
+                    </svg>
+                    MQTT Subscriptions
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <div class="p-3 rounded bg-light">
+                            <code class="text-success">@Settings.Value.Mqtt.Topics.Zigbee</code>
+                            <div class="text-muted small mt-1">ZigBee devices</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="p-3 rounded bg-light">
+                            <code class="text-warning">@Settings.Value.Mqtt.Topics.Lora</code>
+                            <div class="text-muted small mt-1">LoRa devices</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="p-3 rounded bg-light">
+                            <code class="text-info">@Settings.Value.Mqtt.Topics.Bluetooth</code>
+                            <div class="text-muted small mt-1">Bluetooth devices</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="p-3 rounded bg-light">
+                            <code class="text-primary">@Settings.Value.Mqtt.Topics.System</code>
+                            <div class="text-muted small mt-1">System messages</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+}
+
+@code {
+    private RenderFragment TranslatorRow(string label, TranslatorHealth? health) => __builder =>
+    {
+        var (badgeClass, statusText, dotClass) = health switch
+        {
+            null => ("bg-secondary", "Unknown", "bg-secondary"),
+            { Configured: false } => ("bg-secondary", "Not Configured", "bg-secondary"),
+            { Reachable: true } => ("bg-success", "Online", "bg-success"),
+            { Error: not null } h => ("bg-danger", h.Error, "bg-danger"),
+            _ => ("bg-warning text-dark", "Unreachable", "bg-warning")
+        };
+        var url = string.IsNullOrEmpty(health?.Url) ? "Not configured" : health!.Url;
+
+        <div class="list-group-item d-flex justify-content-between align-items-center py-3">
+            <div class="d-flex align-items-center">
+                <div class="rounded-circle p-2 me-3 @dotClass bg-opacity-10">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="text-secondary" viewBox="0 0 16 16">
+                        <path d="M2 20h.01"/><path d="M7 20v-4"/><path d="M12 20v-8"/><path d="M17 20V8"/><path d="M22 4v16"/>
+                    </svg>
+                </div>
+                <div>
+                    <strong>@label</strong>
+                    <div class="text-muted small">@url</div>
+                </div>
+            </div>
+            <span class="badge @badgeClass">@statusText</span>
+        </div>
+    };
+
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+    private static readonly DateTime _startTime = DateTime.UtcNow;
+
+    private readonly CancellationTokenSource _pageCts = new();
+    private Timer? _refreshTimer;
+
+    private string _overallHealth = "Healthy";
+    private string _uptime = "0:00:00";
+    private int _totalDevices;
+    private int _onlineDevices;
+    private int _totalRules;
+    private int _activeRules;
+
+    private TranslatorHealth? _zigbeeHealth;
+    private TranslatorHealth? _loraHealth;
+    private TranslatorHealth? _bleHealth;
+    private TranslatorHealth? _wifiHealth;
+    private bool _deviceServiceHealthy = true;
+    private bool _rulesServiceHealthy = true;
+    // Database health is inferred from whether the repos return without throwing,
+    // since both IDeviceService and IRulesService are backed by PostgreSQL.
+    private bool _databaseHealthy = true;
+
+    private long _memoryUsed;
+    private long _gcHeapMb;
+    private int _threadCount;
+    private int _gcCollections;
+    private string _dotnetVersion = "";
+
+    private string? _errorMessage;
+
+    // --- Metrics tab state ---
+    private List<MetricSample> _metrics = new();
+    private string? _metricsError;
+    private string _activeTab = "health";
+
+    private readonly record struct MetricSample(string Name, string Type, string Help, double Value);
+
+    protected override Task OnInitializedAsync()
+    {
+        // dueTime=Zero makes the timer fire immediately for the first
+        // populate, so OnInitializedAsync returns without blocking and
+        // the shell paints right away; the user sees default badges for
+        // <1 render frame before real data lands, instead of a blank
+        // page until the full DB+translator probe chain completes.
+        _refreshTimer = new Timer(
+            _ => _ = InvokeAsync(async () =>
+            {
+                await RefreshAll();
+                StateHasChanged();
+            }),
+            state: null,
+            dueTime: TimeSpan.Zero,
+            period: RefreshInterval);
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshAll()
+    {
+        await RefreshHealth();
+        if (_activeTab == "metrics") await RefreshMetrics();
+    }
+
+    private void SetTab(string tab)
+    {
+        _activeTab = tab;
+        if (tab == "metrics") _ = InvokeAsync(async () =>
+        {
+            await RefreshMetrics();
+            StateHasChanged();
+        });
+    }
+
+    private Task RefreshMetrics()
+    {
+        // HermodMetrics.Render() is the same string the Prometheus
+        // endpoint serves — call it directly in-process instead of
+        // bouncing out through Navigation.BaseUri, which the pod can't
+        // dial back (kubectl port-forward leaves BaseUri=:42169 but
+        // Kestrel listens on :42069 inside the pod → connection refused
+        // noise in coordinator logs).
+        try
+        {
+            _metrics = ParsePrometheusText(HermodMetrics.Render());
+            _metricsError = null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Metrics render failed");
+            _metricsError = ex.Message;
+        }
+        return Task.CompletedTask;
+    }
+
+    private IEnumerable<IGrouping<string, MetricSample>> GroupedMetrics() =>
+        _metrics
+            .Where(m => m.Name.StartsWith("hermod_", StringComparison.Ordinal))
+            .GroupBy(m => GroupFor(m.Name))
+            .OrderBy(g => g.Key);
+
+    private static string GroupFor(string name) => name switch
+    {
+        var n when n.Contains("mqtt", StringComparison.Ordinal) => "MQTT",
+        var n when n.Contains("rule", StringComparison.Ordinal) => "Rules",
+        var n when n.Contains("device", StringComparison.Ordinal) => "Devices",
+        var n when n.Contains("stats_rollup", StringComparison.Ordinal) => "Stats rollup",
+        var n when n.Contains("message_persistence", StringComparison.Ordinal) => "Message persistence",
+        _ => "General"
+    };
+
+    private static string TypeBadge(string type) => type switch
+    {
+        "counter" => "bg-primary",
+        "gauge" => "bg-success",
+        "histogram" => "bg-warning text-dark",
+        _ => "bg-secondary"
+    };
+
+    // Strips the shared "hermod_" prefix for the card title — redundant
+    // with the group header and eats horizontal space on the tile.
+    private static string ShortName(string name) =>
+        name.StartsWith("hermod_", StringComparison.Ordinal) ? name[7..] : name;
+
+    private static string FormatValue(double value) =>
+        value >= 1_000_000
+            ? (value / 1_000_000d).ToString("0.##M", CultureInfo.InvariantCulture)
+            : value >= 1000
+                ? (value / 1000d).ToString("0.##K", CultureInfo.InvariantCulture)
+                : value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static List<MetricSample> ParsePrometheusText(string text)
+    {
+        var helps = new Dictionary<string, string>();
+        var types = new Dictionary<string, string>();
+        var samples = new Dictionary<string, double>();
+
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0) continue;
+            if (line.StartsWith("# HELP ", StringComparison.Ordinal))
+            {
+                var rest = line.AsSpan(7);
+                var sp = rest.IndexOf(' ');
+                if (sp > 0) helps[rest[..sp].ToString()] = rest[(sp + 1)..].ToString();
+                continue;
+            }
+            if (line.StartsWith("# TYPE ", StringComparison.Ordinal))
+            {
+                var parts = line.AsSpan(7);
+                var sp = parts.IndexOf(' ');
+                if (sp > 0) types[parts[..sp].ToString()] = parts[(sp + 1)..].ToString();
+                continue;
+            }
+            if (line.StartsWith('#')) continue;
+
+            var space = line.LastIndexOf(' ');
+            if (space <= 0) continue;
+            var nameAndLabels = line[..space];
+            var valueStr = line[(space + 1)..];
+            var brace = nameAndLabels.IndexOf('{');
+            var metricName = brace >= 0 ? nameAndLabels[..brace] : nameAndLabels;
+            if (!double.TryParse(valueStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+                continue;
+            samples.TryAdd(metricName, value);
+        }
+
+        return samples
+            .Select(kv => new MetricSample(
+                kv.Key,
+                types.GetValueOrDefault(kv.Key, "unknown"),
+                helps.GetValueOrDefault(kv.Key, ""),
+                kv.Value))
+            .ToList();
+    }
+
+    private async Task RefreshHealth()
+    {
+        // Capture token once — if the component was already disposed (Blazor
+        // circuit dropped while the Timer callback was in flight) `.Token`
+        // throws ObjectDisposedException; bail cleanly so the timer doesn't
+        // log a stack trace every tick and so the page's existing render
+        // isn't blanked.
+        CancellationToken ct;
+        try { ct = _pageCts.Token; }
+        catch (ObjectDisposedException) { return; }
+        if (ct.IsCancellationRequested) return;
+
+        try
+        {
+            var counts = await DeviceService.GetCountsAsync(ct);
+            _totalDevices = counts.Total;
+            _onlineDevices = counts.Online;
+            _deviceServiceHealthy = true;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (ObjectDisposedException) { return; }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Device service health check failed");
+            _deviceServiceHealthy = false;
+        }
+
+        try
+        {
+            // 96 rules in a typical deployment — fine unpaginated. When the
+            // Rules service grows a paged API this moves to a count call.
+            var rules = await RulesService.GetAllRulesAsync(ct);
+            _totalRules = rules.Count();
+            _activeRules = rules.Count(r => r.Enabled);
+            _rulesServiceHealthy = true;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (ObjectDisposedException) { return; }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Rules service health check failed");
+            _rulesServiceHealthy = false;
+        }
+
+        _databaseHealthy = _deviceServiceHealthy && _rulesServiceHealthy;
+
+        try
+        {
+            var translators = await TranslatorHealth.CheckAllAsync(ct);
+            _zigbeeHealth = translators.FirstOrDefault(t => t.Name == "Zigbee2MQTT");
+            _loraHealth = translators.FirstOrDefault(t => t.Name == "LoRa2MQTT");
+            _bleHealth = translators.FirstOrDefault(t => t.Name == "BLE2MQTT");
+            _wifiHealth = translators.FirstOrDefault(t => t.Name == "WiFi2MQTT");
+        }
+        catch (OperationCanceledException) { return; }
+        catch (ObjectDisposedException) { return; }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Translator health check failed");
+        }
+
+        var elapsed = DateTime.UtcNow - _startTime;
+        _uptime = elapsed.Days > 0
+            ? $"{elapsed.Days}d {elapsed.Hours}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}"
+            : $"{elapsed.Hours}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
+
+        UpdateSystemResources();
+        UpdateOverallHealth();
+
+        _errorMessage = _databaseHealthy ? null : "One or more services failed to load. See badge states.";
+    }
+
+    private void UpdateSystemResources()
+    {
+        // Process.GetCurrentProcess returns a new instance with native
+        // handles each call; without `using` the handles only release at
+        // GC finalization, which on a periodic health-tick leaks one
+        // Process per refresh interval.
+        using var process = Process.GetCurrentProcess();
+        _memoryUsed = process.WorkingSet64 / (1024 * 1024);
+        _gcHeapMb = GC.GetTotalMemory(forceFullCollection: false) / (1024 * 1024);
+        _threadCount = process.Threads.Count;
+        _gcCollections = GC.CollectionCount(0) + GC.CollectionCount(1) + GC.CollectionCount(2);
+        _dotnetVersion = Environment.Version.ToString();
+    }
+
+    private void UpdateOverallHealth()
+    {
+        var translators = new[] { _zigbeeHealth, _loraHealth, _bleHealth, _wifiHealth };
+        var anyTranslatorDown = translators.Any(t => t is { Configured: true, Reachable: false });
+
+        if (!MqttService.IsConnected || !_databaseHealthy)
+        {
+            _overallHealth = "Unhealthy";
+        }
+        else if (anyTranslatorDown || (_onlineDevices == 0 && _totalDevices > 0))
+        {
+            _overallHealth = "Degraded";
+        }
+        else
+        {
+            _overallHealth = "Healthy";
+        }
+    }
+
+    public void Dispose()
+    {
+        // Order matters: stop scheduling new timer ticks BEFORE we cancel
+        // and dispose the CTS. Timer.Dispose() does not await in-flight
+        // callbacks, so RefreshHealth() itself guards against the race with
+        // an ObjectDisposedException catch on _pageCts.Token.
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+}

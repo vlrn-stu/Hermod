@@ -1,0 +1,63 @@
+# cert-manager ClusterIssuer for Let's Encrypt.
+#
+# !!! BEFORE APPLYING !!!
+#   1. Replace EMAIL_PLACEHOLDER with a real address — Let's Encrypt
+#      uses it for renewal-failure notifications.
+#   2. Pick HTTP-01 OR DNS-01 (default is HTTP-01) and delete the other.
+#
+# HTTP-01: ACME server hits http://hermod.<your-domain>/.well-known/...
+#   Requires port 80 reachable from the public internet (router NAT or
+#   a public-IP host). Simplest if your network supports it.
+#
+# DNS-01: cert-manager creates a TXT record via your DNS provider's API
+#   to prove domain ownership. No inbound port needed. Required if you
+#   are behind CGNAT, on a Tailscale-only network, or want a wildcard
+#   certificate. Cloudflare DNS example shown below — adapt to your
+#   provider with a different solver block.
+
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: EMAIL_PLACEHOLDER
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      # --- HTTP-01 (default) --------------------------------------------
+      - http01:
+          ingress:
+            class: nginx
+
+      # --- DNS-01 with Cloudflare (commented; uncomment + create the
+      # api-token Secret to use it) -------------------------------------
+      # - dns01:
+      #     cloudflare:
+      #       email: EMAIL_PLACEHOLDER
+      #       apiTokenSecretRef:
+      #         name: cloudflare-api-token
+      #         key: api-token
+      #   selector:
+      #     dnsZones:
+      #       - "your-domain.example"
+---
+# Staging issuer — use this first to verify the chain works before
+# switching the Ingress annotation to letsencrypt-prod. Let's Encrypt
+# rate-limits production issuance hard; staging is unrestricted but
+# returns a fake cert that browsers reject.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: EMAIL_PLACEHOLDER
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx

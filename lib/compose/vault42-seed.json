@@ -1,0 +1,28 @@
+{
+  "users": [
+    {
+      "email": "viewer@hermod.local",
+      "password": "asdfghjklVIEWER123",
+      "display_name": "viewer",
+      "locale": "en",
+      "email_verified": true,
+      "roles": ["viewer"]
+    },
+    {
+      "email": "user@hermod.local",
+      "password": "asdfghjklUSER123",
+      "display_name": "user",
+      "locale": "en",
+      "email_verified": true,
+      "roles": ["user"]
+    },
+    {
+      "email": "operator@hermod.local",
+      "password": "asdfghjklOPER123",
+      "display_name": "operator",
+      "locale": "en",
+      "email_verified": true,
+      "roles": ["operator"]
+    }
+  ]
+}

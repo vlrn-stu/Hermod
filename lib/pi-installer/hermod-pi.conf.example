@@ -1,0 +1,32 @@
+# hermod-pi tool configuration
+# Copy to ./hermod-pi.conf (per-project) or $XDG_CONFIG_HOME/hermod-pi/config.conf (user-wide).
+# Only the keys listed below are honored; unknown keys are ignored with a warning.
+#
+# This file is sourced with restricted key parsing (no shell expansion), so do NOT
+# use $VAR substitutions — write full paths or set the env var externally instead.
+
+# State directory for keys, known_hosts, inventories, audit log.
+# Replace <your-user> with your actual username — the parser does not
+# expand $HOME or ~/.
+HERMOD_PI_HOME=/home/<your-user>/.hermod-pi
+
+# Where customized Pi images land before flashing.
+HERMOD_PI_OUTPUT_DIR=/home/<your-user>/.hermod-pi/images
+
+# Container engine — leave empty to auto-detect podman first, then docker.
+# HERMOD_PI_CONTAINER_ENGINE=podman
+
+# Tag for the image-prep container.
+HERMOD_PI_IMAGE_PREP_TAG=hermod/image-prep:dev
+
+# Default SSH user baked into the Pi by cloud-init (can be overridden per-provisioning).
+HERMOD_PI_DEFAULT_USER=hermod
+
+# Default timezone for first-boot cloud-init.
+HERMOD_PI_DEFAULT_TIMEZONE=UTC
+
+# Ansible directory — leave empty to auto-detect the sibling ../../ansible.
+# HERMOD_ANSIBLE_DIR=/path/to/Hermod/ansible
+
+# Log verbosity: debug, info, warn, error.
+HERMOD_PI_LOG_LEVEL=info

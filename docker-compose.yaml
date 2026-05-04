@@ -1,0 +1,405 @@
+# Hermod IoT Translator — single-host docker-compose stack.
+# Mirrors kubernetes/base/* but flattened for compose.
+# Default credentials are dev-grade; override via .env or env vars.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: hermod-postgres
+    environment:
+      POSTGRES_DB: vault
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD:-change-me-postgres-root}
+      VAULT_APP_PASSWORD: ${VAULT_APP_PASSWORD:-change-me-vault-app}
+      HERMOD_APP_PASSWORD: ${HERMOD_APP_PASSWORD:-change-me-hermod-app}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # `:Z` relabels the host file with the container's SELinux context;
+      # without it Fedora's default container_t can't read host-mounted
+      # scripts and the entrypoint logs `Permission denied` on init.
+      - ./lib/compose/initdb.sh:/docker-entrypoint-initdb.d/01-init.sh:ro,Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vault"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  nanomq:
+    image: emqx/nanomq:0.21-slim
+    container_name: hermod-nanomq
+    command: ["nanomq", "start", "--conf", "/etc/nanomq.conf"]
+    ports:
+      - "1883:1883"
+      - "8081:8081"   # admin
+      # Host port 18083 (not 8083) so this stack coexists with anything
+      # the host already has on 8083 (e.g. FreshRSS / pasta on a podman
+      # rootless setup). Container side stays 8083 — only the host
+      # binding moves.
+      - "18083:8083"  # websocket
+    volumes:
+      - nanomq-data:/data
+      - ./lib/compose/nanomq.conf:/etc/nanomq.conf:ro,Z
+      - ./lib/compose/nanomq_pwd.conf:/etc/nanomq/nanomq_pwd.conf:ro,Z
+    healthcheck:
+      # `nc` isn't in the emqx/nanomq:0.21-slim image but bash is, so
+      # probe the listener via /dev/tcp instead of installing busybox.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/1883' 2>/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # vault42 image is distroless (no /bin/sh) and the binary only loads
+  # secrets via the _FILE convention. This one-shot alpine sidecar
+  # writes password files AND generates a self-signed internal CA +
+  # leaf cert for HTTPS into a shared volume; vault42 mounts the
+  # volume read-only and reads everything from there. Read-only mount
+  # is safe because vault42's "zero + delete after read" hardening
+  # fails silently and the file survives.
+  # One-shot sidecar that materialises every credential the rest of the
+  # stack needs into a shared volume. Layout mirrors the K8s prod
+  # mount paths exactly so the coord/lora2mqtt env vars are identical
+  # to kubernetes/overlays/prod/coord-prod.yaml:
+  #   /secrets/ca/ca.crt           — internal CA (-> coord /etc/hermod/tls/ca)
+  #   /secrets/server/tls.crt+key  — vault42 server cert (-> /etc/vault42/tls)
+  #   /secrets/client/tls.crt+key  — coord client cert (-> /etc/hermod/tls/client)
+  #   /secrets/passwords/*         — vault42 DB passwords (LoadSecret targets)
+  vault42-seed-prep:
+    image: alpine:3.20
+    container_name: hermod-vault42-seed-prep
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache openssl >/dev/null
+        mkdir -p /secrets/passwords /secrets/ca /secrets/server /secrets/client
+
+        # ── DB passwords (vault42 LoadSecret reads via *_FILE) ──
+        printf '%s' "$$VAULT_DB_MIG_PASSWORD" > /secrets/passwords/db-mig-password
+        printf '%s' "$$VAULT_DB_APP_PASSWORD" > /secrets/passwords/db-app-password
+
+        # ── Internal CA + leaf certs ──
+        # Idempotent: regenerate only when the chain doesn't exist yet,
+        # so a `compose down -v` wipes them and `compose up` gets a fresh
+        # chain (otherwise a stale leaf outlasts the paired CA in coord's
+        # trust store).
+        if [ ! -f /secrets/ca/ca.crt ]; then
+          openssl genrsa -out /secrets/ca/ca.key 4096 2>/dev/null
+          openssl req -new -x509 -key /secrets/ca/ca.key \
+            -out /secrets/ca/ca.crt -days 365 -sha256 \
+            -subj "/CN=hermod-compose-ca/O=Hermod/OU=Compose" 2>/dev/null
+
+          # vault42 server leaf (CN=vault42, SANs cover the container
+          # DNS name plus localhost for host-side dev probes)
+          openssl genrsa -out /secrets/server/tls.key 2048 2>/dev/null
+          openssl req -new -key /secrets/server/tls.key \
+            -out /tmp/vault42.csr -subj "/CN=vault42" 2>/dev/null
+          openssl x509 -req -in /tmp/vault42.csr \
+            -CA /secrets/ca/ca.crt -CAkey /secrets/ca/ca.key \
+            -CAcreateserial -out /secrets/server/tls.crt \
+            -days 365 -sha256 \
+            -extfile <(printf 'subjectAltName=DNS:vault42,DNS:localhost,IP:127.0.0.1') 2>/dev/null
+
+          # Coord-client leaf — coord's Security:InternalCAPath/Cert/Key
+          # validator (Program.cs) demands all three set together. Compose
+          # is server-TLS only so vault42 never validates this client
+          # cert, but it must parse as a valid X509KeyPair or
+          # InternalTlsHandlerFactory throws on boot.
+          openssl genrsa -out /secrets/client/tls.key 2048 2>/dev/null
+          openssl req -new -key /secrets/client/tls.key \
+            -out /tmp/coord.csr -subj "/CN=hermod-coord-client" 2>/dev/null
+          openssl x509 -req -in /tmp/coord.csr \
+            -CA /secrets/ca/ca.crt -CAkey /secrets/ca/ca.key \
+            -CAcreateserial -out /secrets/client/tls.crt \
+            -days 365 -sha256 2>/dev/null
+          rm -f /tmp/*.csr /secrets/ca/ca.srl
+        fi
+
+        # 0444 across the board so the distroless `nonroot` UID inside
+        # vault42 can read everything. 0400 root-only blocks LoadSecret
+        # and vault42 falls through to empty-password DB connect → SASL fail.
+        find /secrets -type f -exec chmod 0444 {} \;
+        echo "seed-prep: $$(find /secrets -type f | wc -l) files materialised"
+    environment:
+      VAULT_DB_MIG_PASSWORD: ${VAULT_APP_PASSWORD:-change-me-vault-app}
+      VAULT_DB_APP_PASSWORD: ${VAULT_APP_PASSWORD:-change-me-vault-app}
+    volumes:
+      - vault42-secrets:/secrets
+    restart: "no"
+
+  vault42:
+    image: ghcr.io/42-v/vault42:0.4.2
+    container_name: hermod-vault42
+    depends_on:
+      vault42-seed-prep:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      VAULT_PROFILE: embedded
+      LISTEN_ADDR: ":8443"
+      VAULT_AUTO_MIGRATE: "true"
+      VAULT_TLS_ENABLED: "true"
+      # Same paths the K8s prod overlay uses (kubernetes/overlays/prod/vault42-prod.yaml).
+      VAULT_TLS_CERT_FILE: /etc/vault42/tls/tls.crt
+      VAULT_TLS_KEY_FILE: /etc/vault42/tls/tls.key
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: vault
+      DB_SSLMODE: disable
+      CACHE_BACKEND: memory
+      VAULT_ORIGIN: https://vault42:8443
+      CORS_ORIGINS: "https://hermod-coordinator:42069,https://localhost:42069"
+      VAULT_SEED_FILE: /app/seed/seed.json
+      VAULT_MFA_REQUIRED: "false"
+      VAULT_PASSWORD_MIN_LENGTH: "15"
+      VAULT_RATE_LIMIT_ENABLED: "false"
+      DB_MIG_PASSWORD_FILE: /etc/vault42/secrets/db-mig-password
+      DB_APP_PASSWORD_FILE: /etc/vault42/secrets/db-app-password
+    volumes:
+      # Bind subdirs of the shared secrets volume to the same paths the
+      # K8s deployment mounts its Secrets at, so vault42 reads identical
+      # filesystem locations in both environments.
+      - type: volume
+        source: vault42-secrets
+        target: /etc/vault42/tls
+        read_only: true
+        volume:
+          subpath: server
+      - type: volume
+        source: vault42-secrets
+        target: /etc/vault42/secrets
+        read_only: true
+        volume:
+          subpath: passwords
+      - ./lib/compose/vault42-seed.json:/app/seed/seed.json:ro,Z
+    ports:
+      - "8443:8443"
+    # No HEALTHCHECK: vault42's image is distroless (no shell, no curl,
+    # no wget), so any CMD-based probe fails by default. Dependents
+    # listed below use `condition: service_started` and rely on their
+    # own connection-retry loops to wait for vault42 to actually accept.
+    restart: unless-stopped
+
+  coordinator:
+    build:
+      # Coordinator + LoRa2MQTT Dockerfiles assume `src/` as the build
+      # context so the COPY paths share NuGet.Config without a `src/`
+      # prefix; passing the repo root would 404 every COPY.
+      context: ./src
+      dockerfile: Hermod.Coordinator/Dockerfile
+    image: hermod/coordinator:latest
+    container_name: hermod-coordinator
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nanomq:
+        condition: service_healthy
+      vault42:
+        condition: service_started
+    # Mirrors the build-ca-bundle initContainer from coord-prod.yaml:
+    # append the internal CA to the system trust store so Vault42's
+    # JWKS HttpClient (which ignores Hermod:Security:InternalCAPath
+    # — that knob only wires coord's own InternalTlsHandlerFactory)
+    # validates against it and stops PartialChain'ing the handshake.
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ -f /etc/hermod/tls/ca/ca.crt ]; then
+          cat /etc/hermod/tls/ca/ca.crt >> /etc/ssl/certs/ca-certificates.crt
+        fi
+        exec dotnet Hermod.Coordinator.dll
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:42069
+      DOTNET_USE_POLLING_FILE_WATCHER: "true"
+      Hermod__Mqtt__Host: nanomq
+      Hermod__Mqtt__Port: "1883"
+      Hermod__Mqtt__Username: ${MQTT_USERNAME:-hermod-service}
+      Hermod__Mqtt__Password: ${MQTT_PASSWORD:-change-me-mqtt}
+      Hermod__Database__ConnectionString: "Host=postgres;Port=5432;Database=hermod;Username=hermod_app"
+      Hermod__Database__Password: ${HERMOD_APP_PASSWORD:-change-me-hermod-app}
+      Vault42__Authority: https://vault42:8443
+      # Pin the seed-prep-issued internal CA so coord trusts vault42's
+      # self-signed leaf cert. Same env keys the prod overlay uses.
+      Hermod__Security__InternalCAPath: /etc/hermod/tls/ca/ca.crt
+      Hermod__Security__ClientCertPath: /etc/hermod/tls/client/tls.crt
+      Hermod__Security__ClientKeyPath: /etc/hermod/tls/client/tls.key
+      # Dev-only knobs for the local compose stack: expose the
+      # /MockZigbee tester page and any other Dev:Enabled-gated paths,
+      # and bind the Operator policy to the "operator" role string
+      # vault42 hands out (the same env the prod overlay sets).
+      Hermod__Dev__Enabled: "true"
+      Hermod__Auth__AdminRole: operator
+      # Protocol translator endpoints — point at compose service DNS,
+      # not the K8s cluster DNS the prod overlay uses, and disable the
+      # Zigbee2Mqtt adapter entirely since z2m isn't started here (no
+      # USB adapter on the compose host). Without these overrides the
+      # dashboard's Protocol Adapters card shows Timeout/SocketException
+      # for the K8s-DNS endpoints that don't resolve in compose.
+      Hermod__ProtocolTranslators__Zigbee2Mqtt__Enabled: "false"
+      Hermod__ProtocolTranslators__Lora2Mqtt__Url: http://lora2mqtt:8080
+      Hermod__ProtocolTranslators__Ble2Mqtt__Url: mqtt://nanomq:1883
+      Hermod__ProtocolTranslators__Wifi2Mqtt__Url: mqtt://wifi2mqtt:1883
+    ports:
+      - "42069:42069"
+    volumes:
+      - hermod-data:/app/data
+      # Same K8s mount paths so the env vars above match coord-prod.yaml verbatim.
+      - type: volume
+        source: vault42-secrets
+        target: /etc/hermod/tls/ca
+        read_only: true
+        volume:
+          subpath: ca
+      - type: volume
+        source: vault42-secrets
+        target: /etc/hermod/tls/client
+        read_only: true
+        volume:
+          subpath: client
+    restart: unless-stopped
+
+  # ── Protocol translators ───────────────────────────────────────────
+
+  # LoRa over MQTT. Defaults to MockMode=true so it boots without a
+  # SX127x/SX126x dongle. To use real hardware: set LoRa__MockMode=false
+  # and uncomment the `devices:` line below (Linux only — Windows/macOS
+  # need WSL2 + usbipd or the equivalent host shim).
+  lora2mqtt:
+    build:
+      context: ./src
+      dockerfile: LoRa2MQTT/LoRa2MQTT.Service/Dockerfile
+    image: hermod/lora2mqtt:latest
+    container_name: hermod-lora2mqtt
+    depends_on:
+      nanomq: { condition: service_healthy }
+      vault42: { condition: service_started }
+    # Same CA-append shim as coord — Vault42 JWKS HttpClient validates
+    # against the OS trust store, which without this would PartialChain.
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ -f /etc/hermod/tls/ca/ca.crt ]; then
+          cat /etc/hermod/tls/ca/ca.crt >> /etc/ssl/certs/ca-certificates.crt
+        fi
+        exec dotnet LoRa2MQTT.Service.dll
+    environment:
+      # Compose-only AuthBypass: the dashboard's Lora.razor calls
+      # lora2mqtt's /api/* server-side, but reads the JWT from JS
+      # localStorage which the HttpOnly hermod_token cookie has
+      # superseded — so no Authorization header gets attached and
+      # lora2mqtt's Vault42 auth scheme 401s every request, surfacing
+      # as "Bridge Offline" in the UI. Bypass is gated on env != Production
+      # by Program.cs, so Development here is what unlocks it; the
+      # K8s prod overlay leaves both Production + bypass off.
+      ASPNETCORE_ENVIRONMENT: Development
+      Hermod__Security__AuthBypass: "true"
+      LoRa__MockMode: "true"
+      Mqtt__Host: nanomq
+      Mqtt__Port: "1883"
+      Mqtt__Username: ${MQTT_USERNAME:-hermod-service}
+      Mqtt__Password: ${MQTT_PASSWORD:-change-me-mqtt}
+      Vault42__Authority: https://vault42:8443
+      Hermod__Security__InternalCAPath: /etc/hermod/tls/ca/ca.crt
+      Hermod__Security__ClientCertPath: /etc/hermod/tls/client/tls.crt
+      Hermod__Security__ClientKeyPath: /etc/hermod/tls/client/tls.key
+      DOTNET_USE_POLLING_FILE_WATCHER: "true"
+    volumes:
+      - type: volume
+        source: vault42-secrets
+        target: /etc/hermod/tls/ca
+        read_only: true
+        volume:
+          subpath: ca
+      - type: volume
+        source: vault42-secrets
+        target: /etc/hermod/tls/client
+        read_only: true
+        volume:
+          subpath: client
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    restart: unless-stopped
+
+  # BLE bridge — Theengs Gateway publishes BLE advertisement data over
+  # MQTT. Started with `-b 0` so it runs without a Bluetooth host
+  # adapter (compose dev box). Mosquitto bridge sidecar republishes
+  # locally-published `bluetooth/BTtoMQTT/<MAC>` topics into nanomq as
+  # `bluetooth/<MAC>` to match the prod-pi rewrite.
+  ble2mqtt:
+    image: theengs/gateway:latest
+    container_name: hermod-ble2mqtt
+    depends_on:
+      nanomq: { condition: service_healthy }
+    command:
+      - bash
+      - -c
+      - |
+        source /opt/venv/bin/activate
+        exec python -m TheengsGateway -H nanomq -P 1883 \
+          -u ${MQTT_USERNAME:-hermod-service} \
+          -p ${MQTT_PASSWORD:-change-me-mqtt} \
+          -pt bluetooth \
+          -Lt bluetooth/LWT \
+          -D 0 \
+          -b 0
+    restart: unless-stopped
+
+  # Wi-Fi devices (Tasmota / ESPHome / Shelly / …) connect to this
+  # mosquitto on host port 1884 and the bridge republishes upstream to
+  # nanomq under the `wifi/` topic prefix.
+  wifi2mqtt:
+    image: eclipse-mosquitto:2.0.18
+    container_name: hermod-wifi2mqtt
+    depends_on:
+      nanomq: { condition: service_healthy }
+    ports:
+      - "1884:1883"
+    volumes:
+      - ./lib/compose/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z
+    restart: unless-stopped
+
+  # ── Zigbee (manual setup required) ─────────────────────────────────
+  # zigbee2mqtt is intentionally NOT enabled by default. Adapter and
+  # platform handling vary too much for a one-size-fits-all compose
+  # entry:
+  #   * Adapter family decides the driver: Sonoff Plus V2 = ember
+  #     (EmberZNet, use bellows); CC2652/CC1352 = zstack; ConBee/RaspBee
+  #     = deconz; nRF52 = ezsp variant.
+  #   * Device path varies: /dev/ttyACM0 (most USB sticks), /dev/ttyAMA0
+  #     (Pi UART HAT), /dev/ttyUSB0 (FTDI).
+  #   * Linux: device passthrough works directly with the `devices:` key.
+  #   * Windows/macOS: requires WSL2 + usbipd (Win) or virtualisation
+  #     hacks (macOS); zigbee2mqtt running in Docker Desktop cannot see
+  #     a host USB serial device without the shim.
+  #   * Network setup (channel, pan_id, network_key) must persist across
+  #     restarts in zigbee-data, otherwise every device re-pairs.
+  #
+  # Reference manifest with all the knobs:
+  #   kubernetes/base/zigbee2mqtt/deployment.yaml
+  # See INSTALL.md → "Zigbee setup" before uncommenting.
+  #
+  # zigbee2mqtt:
+  #   image: koenkk/zigbee2mqtt:latest
+  #   container_name: hermod-zigbee2mqtt
+  #   depends_on:
+  #     nanomq: { condition: service_healthy }
+  #   volumes:
+  #     - zigbee-data:/app/data
+  #   devices:
+  #     - /dev/ttyACM0:/dev/ttyACM0
+  #   restart: unless-stopped
+
+volumes:
+  postgres-data:
+  nanomq-data:
+  hermod-data:
+  vault42-secrets:
+  # zigbee-data:

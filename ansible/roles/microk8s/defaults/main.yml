@@ -1,0 +1,17 @@
+---
+# MicroK8s role defaults
+
+microk8s_channel: "1.30/stable"
+
+microk8s_addons:
+  - dns
+  - storage
+  - registry
+  - ingress
+  - metrics-server
+
+# How many seconds to wait for MicroK8s to become ready after install
+microk8s_ready_timeout: 300
+
+# Where to write the kubeconfig for hermod_user
+microk8s_kubeconfig_path: "/home/{{ hermod_user }}/.kube/config"

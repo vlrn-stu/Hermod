@@ -1,0 +1,59 @@
+---
+# install.yml - Provisions a fresh Raspberry Pi 5 to be ready for the
+# Hermod stack. Stops at "Pi ready" — the actual stack deploy
+# (image build on the Pi, kustomize apply of the prod overlay,
+# namespace + secret + cert seeding, rollout) is owned by hermod.sh:
+#
+#   ./hermod.sh install prod-pi   # first-time stack deploy
+#   ./hermod.sh update  prod-pi   # ongoing rollouts
+#
+# Splitting host prep (this playbook) from stack deploy (hermod.sh)
+# keeps each tool authoritative for its own layer and avoids two
+# parallel manifest applies fighting over namespaces and image names.
+#
+# Usage:
+#   Dry run:  ansible-playbook -i inventory/hosts.yml playbooks/install.yml --check
+#   Full run: ansible-playbook -i inventory/hosts.yml playbooks/install.yml
+#
+# What this does:
+#   1. Prepares the OS (packages, swap, sysctl)
+#   2. Installs MicroK8s and enables required addons + NodePort range
+#   3. Configures USB udev rules for ZigBee and LoRa dongles
+#   4. Sets up the optional ansible-pull updater service (off by default)
+#
+# What this DOES NOT do (handed off to hermod.sh):
+#   - Build or import Hermod container images (install/update build on Pi)
+#   - Apply Kubernetes manifests / create namespaces
+#   - Seed Secrets (operator vault / cert chain / seed users)
+#   - Run Hermod-stack health checks (use `hermod.sh status prod-pi`)
+
+- name: Provision Raspberry Pi 5 for Hermod
+  hosts: hermod_nodes
+  gather_facts: true
+
+  pre_tasks:
+    - name: install | Announce start
+      ansible.builtin.debug:
+        msg: "Provisioning {{ inventory_hostname }} ({{ ansible_host }}) for Hermod"
+      tags: [always]
+
+  roles:
+    - role: base
+      tags: [base]
+
+    - role: microk8s
+      tags: [microk8s]
+
+    - role: usb_passthrough
+      tags: [usb]
+
+    - role: updater
+      tags: [updater]
+
+  post_tasks:
+    - name: install | Provisioning complete
+      ansible.builtin.debug:
+        msg: >
+          Pi ready. Next step on the operator host:
+            ./hermod.sh install prod-pi
+      tags: [always]

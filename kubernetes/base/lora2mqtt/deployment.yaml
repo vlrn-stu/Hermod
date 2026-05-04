@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lora2mqtt
+  namespace: hermod
+  labels:
+    app: lora2mqtt
+    component: protocol-translator
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): lora2mqtt holds /dev/ttyACM0 exclusively.
+  # Same USB-lock contention as z2m.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lora2mqtt
+  template:
+    metadata:
+      labels:
+        app: lora2mqtt
+        component: protocol-translator
+    spec:
+      initContainers:
+        - name: wait-for-vault42
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for vault42 JWKS endpoint..."
+              until nc -z vault42.hermod.svc.cluster.local 8080; do
+                echo "vault42 not ready, sleeping..."
+                sleep 2
+              done
+              echo "vault42 is ready!"
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for nanomq..."
+              until nc -z nanomq.hermod.svc.cluster.local 1883; do
+                echo "nanomq not ready, sleeping..."
+                sleep 2
+              done
+              echo "nanomq is ready!"
+      containers:
+        - name: lora2mqtt
+          image: lora2mqtt:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: LoRa__MockMode
+              value: "false"
+            - name: Mqtt__Host
+              value: "nanomq.hermod.svc.cluster.local"
+            - name: Mqtt__Port
+              value: "1883"
+            # Per-translator user from hermod-mqtt-users so the ACL rule
+            # `username = "lora2mqtt"` matches publishes to lora/# and
+            # subscribes to lora/+/set. hermod-secrets:mqtt-username
+            # is `hermod-service` whose ACL only grants /+/set publishes,
+            # so every telemetry publish was silently denied.
+            - name: Mqtt__Username
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: lora2mqtt-username
+            - name: Mqtt__Password
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: lora2mqtt-password
+            # Polling watcher avoids exhausting host inotify instances.
+            - name: DOTNET_USE_POLLING_FILE_WATCHER
+              value: "true"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          volumeMounts:
+            - name: config
+              mountPath: /app/appsettings.json
+              subPath: appsettings.json
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap:
+            name: lora2mqtt-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lora2mqtt
+  namespace: hermod
+  labels:
+    app: lora2mqtt
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: lora2mqtt

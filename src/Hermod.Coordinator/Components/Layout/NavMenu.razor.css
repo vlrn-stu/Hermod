@@ -1,0 +1,147 @@
+/* NavMenu.razor.css - Scoped styles for NavMenu component */
+/* Most styles are now inline in the component for better maintainability */
+/* This file provides fallback/override styles if needed */
+
+.navbar-toggler {
+    appearance: none;
+    cursor: pointer;
+    width: 3rem;
+    height: 2.25rem;
+    color: white;
+    position: absolute;
+    top: 0.625rem;
+    right: 1rem;
+    border: 1px solid rgba(0, 255, 65, 0.2);
+    background: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3e%3cpath stroke='%2300FF41' stroke-linecap='round' stroke-miterlimit='10' stroke-width='2' d='M4 7h22M4 15h22M4 23h22'/%3e%3c/svg%3e") no-repeat center/1.5rem rgba(0, 255, 65, 0.05);
+    border-radius: 8px;
+    z-index: 10;
+}
+
+.navbar-toggler:checked {
+    background-color: rgba(0, 255, 65, 0.15);
+}
+
+.top-row {
+    height: 3.5rem;
+    display: flex;
+    align-items: center;
+    background: #000000;
+    border-bottom: 1px solid rgba(0, 255, 65, 0.15);
+    padding: 0 1rem;
+}
+
+.navbar-brand {
+    font-size: 1.125rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    color: #00FF41;
+    letter-spacing: 0.5px;
+    gap: 0.75rem;
+}
+
+.nav-icon {
+    margin-right: 0.75rem;
+    opacity: 0.7;
+    flex-shrink: 0;
+    transition: opacity 0.15s ease;
+    display: flex;
+    align-items: center;
+}
+
+.nav-section {
+    padding: 1.25rem 1rem 0.5rem 1rem;
+    margin-top: 0.25rem;
+}
+
+.nav-section:first-child {
+    padding-top: 0.75rem;
+    margin-top: 0;
+}
+
+.nav-section small {
+    color: rgba(0, 255, 65, 0.4);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+}
+
+.nav-item {
+    font-size: 0.875rem;
+    padding: 0.125rem 0.5rem;
+}
+
+.nav-item ::deep .nav-link {
+    color: rgba(255, 255, 255, 0.7);
+    background: none;
+    border: none;
+    border-radius: 8px;
+    height: 2.5rem;
+    display: flex;
+    align-items: center;
+    line-height: 2.5rem;
+    width: 100%;
+    transition: all 0.15s ease;
+    padding: 0 0.75rem;
+    text-decoration: none;
+}
+
+.nav-item ::deep a.active {
+    background: linear-gradient(135deg, #00FF41 0%, #00CC33 100%);
+    color: #000000;
+    box-shadow: 0 4px 16px rgba(0, 255, 65, 0.3);
+}
+
+.nav-item ::deep a.active .nav-icon {
+    opacity: 1;
+    color: #000000;
+}
+
+.nav-item ::deep .nav-link:hover {
+    background-color: rgba(0, 255, 65, 0.1);
+    color: #ffffff;
+}
+
+.nav-item ::deep .nav-link:hover .nav-icon {
+    opacity: 1;
+    color: #00FF41;
+}
+
+.nav-scrollable {
+    display: none;
+    background: #000000;
+}
+
+.navbar-toggler:checked ~ .nav-scrollable {
+    display: block;
+}
+
+@media (min-width: 641px) {
+    .navbar-toggler {
+        display: none;
+    }
+
+    .nav-scrollable {
+        display: block;
+        height: calc(100vh - 3.5rem);
+        overflow-y: auto;
+    }
+}
+
+/* Scrollbar styling */
+.nav-scrollable::-webkit-scrollbar {
+    width: 4px;
+}
+
+.nav-scrollable::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.nav-scrollable::-webkit-scrollbar-thumb {
+    background: rgba(0, 255, 65, 0.2);
+    border-radius: 2px;
+}
+
+.nav-scrollable::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 255, 65, 0.4);
+}

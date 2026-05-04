@@ -1,0 +1,99 @@
+---
+# Install and configure MicroK8s.
+# Idempotent: checks snap install state and addon status before acting.
+
+- name: microk8s | Check if microk8s snap is already installed
+  ansible.builtin.command:
+    cmd: snap list microk8s
+  register: _snap_list
+  changed_when: false
+  failed_when: false
+  tags: [microk8s, install]
+
+- name: microk8s | Install microk8s snap (channel={{ microk8s_channel }})
+  community.general.snap:
+    name: microk8s
+    classic: true
+    channel: "{{ microk8s_channel }}"
+    state: present
+  when: _snap_list.rc != 0
+  tags: [microk8s, install]
+
+- name: microk8s | Add {{ hermod_user }} to microk8s group
+  ansible.builtin.user:
+    name: "{{ hermod_user }}"
+    groups: microk8s
+    append: true
+  tags: [microk8s, groups]
+
+- name: microk8s | Ensure ~/.kube directory exists for {{ hermod_user }}
+  ansible.builtin.file:
+    path: "/home/{{ hermod_user }}/.kube"
+    state: directory
+    owner: "{{ hermod_user }}"
+    group: "{{ hermod_user }}"
+    mode: "0755"
+  tags: [microk8s, kubeconfig]
+
+- name: microk8s | Wait for MicroK8s to be ready
+  ansible.builtin.command:
+    cmd: microk8s status --wait-ready --timeout {{ microk8s_ready_timeout }}
+  changed_when: false
+  tags: [microk8s, wait]
+
+# ---------------------------------------------------------------------------
+# Enable addons (idempotent: parse enabled addons before acting)
+# ---------------------------------------------------------------------------
+
+- name: microk8s | Get list of currently enabled addons
+  ansible.builtin.command:
+    cmd: microk8s status --format short
+  register: _microk8s_status
+  changed_when: false
+  tags: [microk8s, addons]
+
+- name: microk8s | Enable required addons (idempotent; prints "already enabled" if present)
+  ansible.builtin.command:
+    cmd: "microk8s enable {{ item }}"
+  loop: "{{ microk8s_addons }}"
+  register: _addon_enable
+  changed_when: "'Addon ' + item + ' is already enabled' not in _addon_enable.stdout"
+  tags: [microk8s, addons]
+
+- name: microk8s | Wait for MicroK8s to be ready after enabling addons
+  ansible.builtin.command:
+    cmd: microk8s status --wait-ready --timeout {{ microk8s_ready_timeout }}
+  changed_when: false
+  when: _addon_enable.changed
+  tags: [microk8s, addons]
+
+# ---------------------------------------------------------------------------
+# Write kubeconfig for hermod_user
+# ---------------------------------------------------------------------------
+
+- name: microk8s | Export kubeconfig
+  ansible.builtin.command:
+    cmd: microk8s config
+  register: _kubeconfig
+  changed_when: false
+  tags: [microk8s, kubeconfig]
+
+- name: microk8s | Write kubeconfig to {{ microk8s_kubeconfig_path }}
+  ansible.builtin.copy:
+    content: "{{ _kubeconfig.stdout }}"
+    dest: "{{ microk8s_kubeconfig_path }}"
+    owner: "{{ hermod_user }}"
+    group: "{{ hermod_user }}"
+    mode: "0600"
+  tags: [microk8s, kubeconfig]
+
+# ---------------------------------------------------------------------------
+# Convenience alias: allow 'kubectl' to work as a shortcut for 'microk8s kubectl'
+# ---------------------------------------------------------------------------
+
+- name: microk8s | Create kubectl symlink for convenience
+  ansible.builtin.file:
+    src: /snap/bin/microk8s
+    dest: /usr/local/bin/kubectl_mk8s
+    state: link
+  tags: [microk8s, kubectl]

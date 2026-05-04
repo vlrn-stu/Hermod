@@ -1,0 +1,915 @@
+@page "/mock/lora"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using System.Text.Json
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IMqttService MqttService
+@inject ILogger<MockLoRa> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>LoRa2MQTT Mock - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_errorMessage</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="() => _errorMessage = null">Dismiss</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-warning">LoRa2MQTT</span> Mock
+        </h1>
+        <p class="text-muted mb-0">LoRa device simulation for testing (controls lora2mqtt mock adapter)</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(MqttService.IsConnected ? "bg-success" : "bg-danger") fs-6">
+            @(MqttService.IsConnected ? "MQTT Connected" : "MQTT Disconnected")
+        </span>
+        <a href="/mock" class="btn btn-outline-secondary btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+            </svg>
+            Back to Mock
+        </a>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages Sent</h6>
+                <h2 class="mb-0 fw-bold">@_messagesSent</h2>
+                <small class="text-white-50">This session</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Auto Simulation</h6>
+                <h2 class="mb-0 fw-bold">@(_autoSimRunning ? "Running" : "Stopped")</h2>
+                <small class="text-white-50">Mock mode control</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Mock Devices</h6>
+                <h2 class="mb-0 fw-bold">@_mockDevices.Count</h2>
+                <small class="text-white-50">Available presets</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages Received</h6>
+                <h2 class="mb-0 fw-bold">@_receivedMessages.Count</h2>
+                <small class="text-white-50">From MQTT</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Content Tabs -->
+<ul class="nav nav-tabs mb-4" id="loraTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "register" ? "active" : "")" @onclick='() => _activeTab = "register"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+            </svg>
+            Register Devices
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "devices" ? "active" : "")" @onclick='() => _activeTab = "devices"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M0 0h1v15h15v1H0V0Zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07Z"/>
+            </svg>
+            Simulate
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "control" ? "active" : "")" @onclick='() => _activeTab = "control"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/>
+                <path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/>
+            </svg>
+            Mock Control
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "custom" ? "active" : "")" @onclick='() => _activeTab = "custom"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M6 3a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM1 3a2 2 0 1 0 4 0 2 2 0 0 0-4 0z"/>
+                <path d="M9 6h.5a2 2 0 0 1 1.983 1.738l3.11-1.382A1 1 0 0 1 16 7.269v7.462a1 1 0 0 1-1.406.913l-3.111-1.382A2 2 0 0 1 9.5 16H2a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h7zm6 8.73V7.27l-3.5 1.555v4.35l3.5 1.556zM1 8v6a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1z"/>
+            </svg>
+            Custom Builder
+        </button>
+    </li>
+</ul>
+
+<div class="row g-4">
+    <!-- Left Panel: Controls -->
+    <div class="col-lg-7">
+        @if (_activeTab == "register")
+        {
+            <!-- Register New Device -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Register Mock Device</h5>
+                    <small class="text-muted">Add a new mock LoRa device via MQTT (lora/mock/devices/add)</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Device ID <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" @bind="_newDeviceId" placeholder="e.g., weather_station_1" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Type <span class="text-danger">*</span></label>
+                            <select class="form-select" @bind="_newDeviceType">
+                                <option value="weather">Weather Station</option>
+                                <option value="soil">Soil Sensor</option>
+                                <option value="meter">Water/Gas Meter</option>
+                                <option value="gps">GPS Tracker</option>
+                                <option value="generic">Generic Sensor</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Manufacturer</label>
+                            <input type="text" class="form-control" @bind="_newDeviceManufacturer" placeholder="e.g., Dragino" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Model</label>
+                            <input type="text" class="form-control" @bind="_newDeviceModel" placeholder="e.g., LSN50v2" />
+                        </div>
+                        <div class="col-12">
+                            <button class="btn btn-success w-100" @onclick="RegisterDevice" disabled="@(!MqttService.IsConnected || string.IsNullOrWhiteSpace(_newDeviceId))">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                    <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                                    <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+                                </svg>
+                                Register Device
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Add Presets -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Quick Add Presets</h5>
+                    <small class="text-muted">Register common LoRa device types with one click</small>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-outline-info" @onclick='() => RegisterPreset("weather_station_1", "weather", "Dragino", "LSN50v2")' disabled="@(!MqttService.IsConnected)">
+                            Weather Station
+                        </button>
+                        <button class="btn btn-outline-success" @onclick='() => RegisterPreset("soil_sensor_garden", "soil", "Dragino", "LSE01")' disabled="@(!MqttService.IsConnected)">
+                            Soil Sensor (Garden)
+                        </button>
+                        <button class="btn btn-outline-success" @onclick='() => RegisterPreset("soil_sensor_greenhouse", "soil", "Dragino", "LSE01")' disabled="@(!MqttService.IsConnected)">
+                            Soil Sensor (Greenhouse)
+                        </button>
+                        <button class="btn btn-outline-primary" @onclick='() => RegisterPreset("water_meter_main", "meter", "Axioma", "W1")' disabled="@(!MqttService.IsConnected)">
+                            Water Meter
+                        </button>
+                        <button class="btn btn-outline-warning" @onclick='() => RegisterPreset("gps_tracker_car", "gps", "RAK", "RAK7200")' disabled="@(!MqttService.IsConnected)">
+                            GPS Tracker
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Registered Devices -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0 fw-semibold">Registered Mock Devices</h5>
+                        <small class="text-muted">Devices registered in lora2mqtt mock adapter</small>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger" @onclick="ClearAllDevices" disabled="@(!MqttService.IsConnected || !_mockDevices.Any())">
+                        Clear All
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    @if (_mockDevices.Any())
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Device ID</th>
+                                        <th>Type</th>
+                                        <th>Manufacturer</th>
+                                        <th>Model</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var device in _mockDevices)
+                                    {
+                                        <tr>
+                                            <td><strong>@device.Id</strong></td>
+                                            <td><span class="badge @GetDeviceTypeBadge(device.Type)">@device.Type</span></td>
+                                            <td>@device.Manufacturer</td>
+                                            <td><code class="small">@device.Model</code></td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-danger" @onclick="() => UnregisterDevice(device.Id)" disabled="@(!MqttService.IsConnected)">
+                                                    Remove
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted py-4">
+                            <p class="mb-1">No mock devices registered</p>
+                            <small>Use the form above or quick presets to add devices</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+        else if (_activeTab == "devices")
+        {
+            <!-- Device State Simulator -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Device State Simulator</h5>
+                    <small class="text-muted">Send LoRa device state updates to lora/[device]</small>
+                </div>
+                <div class="card-body">
+                    @if (!_mockDevices.Any())
+                    {
+                        <div class="alert alert-info mb-3">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-2" viewBox="0 0 16 16">
+                                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                                <path d="m8.93 6.588-2.29.287-.082.38.45.083c.294.07.352.176.288.469l-.738 3.468c-.194.897.105 1.319.808 1.319.545 0 1.178-.252 1.465-.598l.088-.416c-.2.176-.492.246-.686.246-.275 0-.375-.193-.304-.533L8.93 6.588zM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/>
+                            </svg>
+                            <strong>No mock devices registered.</strong> Go to the <a href="#" @onclick='() => _activeTab = "register"' @onclick:preventDefault class="alert-link">Register Devices</a> tab to add mock LoRa devices first.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Select Device</label>
+                                <select class="form-select" @bind="_selectedDeviceIndex">
+                                    @for (int i = 0; i < _mockDevices.Count; i++)
+                                    {
+                                        <option value="@i">@_mockDevices[i].Id (@_mockDevices[i].Type)</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Device Type</label>
+                                <input type="text" class="form-control" value="@SelectedDevice?.Type" readonly />
+                            </div>
+                        </div>
+                    }
+
+                    @if (SelectedDevice != null)
+                    {
+                        <div class="row g-3">
+                            @if (SelectedDevice.Type == "weather")
+                            {
+                                <div class="col-md-4">
+                                    <label class="form-label">Temperature °C</label>
+                                    <input type="number" class="form-control" @bind="_weatherTemp" step="0.1" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Humidity %</label>
+                                    <input type="number" class="form-control" @bind="_weatherHumidity" step="0.1" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Pressure hPa</label>
+                                    <input type="number" class="form-control" @bind="_weatherPressure" step="0.01" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Wind Speed m/s</label>
+                                    <input type="number" class="form-control" @bind="_windSpeed" step="0.1" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Wind Direction °</label>
+                                    <input type="number" class="form-control" @bind="_windDirection" min="0" max="360" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Rain (mm/h)</label>
+                                    <input type="number" class="form-control" @bind="_rain" step="0.1" />
+                                </div>
+                            }
+                            else if (SelectedDevice.Type == "soil")
+                            {
+                                <div class="col-md-4">
+                                    <label class="form-label">Moisture %</label>
+                                    <input type="number" class="form-control" @bind="_soilMoisture" min="0" max="100" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Temperature °C</label>
+                                    <input type="number" class="form-control" @bind="_soilTemp" step="0.1" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">EC (mS/cm)</label>
+                                    <input type="number" class="form-control" @bind="_soilEc" step="0.1" />
+                                </div>
+                            }
+                            else if (SelectedDevice.Type == "meter")
+                            {
+                                <div class="col-md-6">
+                                    <label class="form-label">Consumption (m³)</label>
+                                    <input type="number" class="form-control" @bind="_meterConsumption" step="0.01" />
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Flow Rate (L/min)</label>
+                                    <input type="number" class="form-control" @bind="_meterFlowRate" step="0.1" />
+                                </div>
+                            }
+                            else if (SelectedDevice.Type == "gps")
+                            {
+                                <div class="col-md-4">
+                                    <label class="form-label">Latitude</label>
+                                    <input type="number" class="form-control" @bind="_gpsLat" step="0.0001" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Longitude</label>
+                                    <input type="number" class="form-control" @bind="_gpsLon" step="0.0001" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Speed (km/h)</label>
+                                    <input type="number" class="form-control" @bind="_gpsSpeed" step="0.1" />
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Altitude (m)</label>
+                                    <input type="number" class="form-control" @bind="_gpsAltitude" />
+                                </div>
+                            }
+                            <!-- Common LoRa fields -->
+                            <div class="col-md-4">
+                                <label class="form-label">RSSI (dBm)</label>
+                                <input type="number" class="form-control" @bind="_rssi" />
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">SNR (dB)</label>
+                                <input type="number" class="form-control" @bind="_snr" step="0.1" />
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Battery (V)</label>
+                                <input type="number" class="form-control" @bind="_battery" step="0.1" />
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button class="btn btn-primary w-100" @onclick="SendDeviceState" disabled="@(!MqttService.IsConnected)">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                    <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Z"/>
+                                </svg>
+                                Send State
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Quick Device Actions -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0 fw-semibold">Quick Actions</h5>
+                        <small class="text-muted">Trigger mock device messages via lora2mqtt</small>
+                    </div>
+                    <button class="btn btn-sm btn-success" @onclick="TriggerAllDevices" disabled="@(!MqttService.IsConnected || !_mockDevices.Any())">
+                        Trigger All Devices
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    @if (_mockDevices.Any())
+                    {
+                        <div class="table-responsive" style="max-height: 300px;">
+                            <table class="table table-sm table-hover mb-0">
+                                <thead class="sticky-top" style="background-color: var(--hermod-card-bg);">
+                                    <tr>
+                                        <th>Device ID</th>
+                                        <th>Type</th>
+                                        <th>Model</th>
+                                        <th>Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var device in _mockDevices)
+                                    {
+                                        <tr>
+                                            <td><strong>@device.Id</strong></td>
+                                            <td><span class="badge @GetDeviceTypeBadge(device.Type)">@device.Type</span></td>
+                                            <td><code class="small">@device.Model</code></td>
+                                            <td>
+                                                <button class="btn btn-sm btn-outline-warning" @onclick="() => TriggerDevice(device.Id)" disabled="@(!MqttService.IsConnected)">
+                                                    Trigger
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted py-4">
+                            <p class="mb-1">No mock devices to trigger</p>
+                            <small>Register devices first using the Register Devices tab</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+        else if (_activeTab == "control")
+        {
+            <!-- Mock Control -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Mock Adapter Control</h5>
+                    <small class="text-muted">Control lora2mqtt mock adapter via MQTT</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-4">
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Auto Simulation</label>
+                            <p class="text-muted small mb-2">Automatically send mock data at configured intervals</p>
+                            <div class="btn-group w-100" role="group">
+                                <button class="btn @(_autoSimRunning ? "btn-success" : "btn-outline-success")" @onclick="StartAutoSimulation" disabled="@(!MqttService.IsConnected)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                        <path d="m11.596 8.697-6.363 3.692c-.54.313-1.233-.066-1.233-.697V4.308c0-.63.692-1.01 1.233-.696l6.363 3.692a.802.802 0 0 1 0 1.393z"/>
+                                    </svg>
+                                    Start Auto Simulation
+                                </button>
+                                <button class="btn @(!_autoSimRunning ? "btn-danger" : "btn-outline-danger")" @onclick="StopAutoSimulation" disabled="@(!MqttService.IsConnected)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                        <path d="M5 3.5h6A1.5 1.5 0 0 1 12.5 5v6a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5z"/>
+                                    </svg>
+                                    Stop Auto Simulation
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" />
+
+                    <h6 class="fw-semibold mb-3">Inject Custom LoRa Message</h6>
+                    <p class="text-muted small mb-3">Inject a raw LoRa message as if received from hardware</p>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Address</label>
+                            <input type="number" class="form-control" @bind="_injectAddress" min="0" max="65535" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Channel</label>
+                            <input type="number" class="form-control" @bind="_injectChannel" min="0" max="80" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">RSSI (dBm)</label>
+                            <input type="number" class="form-control" @bind="_injectRssi" />
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Payload (hex or text)</label>
+                            <input type="text" class="form-control font-monospace" @bind="_injectPayload" placeholder="48656C6C6F or Hello" />
+                        </div>
+                        <div class="col-12">
+                            <button class="btn btn-warning w-100" @onclick="InjectMessage" disabled="@(!MqttService.IsConnected)">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                    <path fill-rule="evenodd" d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5h-2z"/>
+                                    <path d="M8 6.5a.5.5 0 0 1 .5.5v1.5H10a.5.5 0 0 1 0 1H8.5V11a.5.5 0 0 1-1 0V9.5H6a.5.5 0 0 1 0-1h1.5V7a.5.5 0 0 1 .5-.5z"/>
+                                </svg>
+                                Inject LoRa Message
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+        else if (_activeTab == "custom")
+        {
+            <!-- Custom Message Builder -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Custom Message Builder</h5>
+                    <small class="text-muted">Build and send any LoRa2MQTT message</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Topic Template</label>
+                            <select class="form-select" @onchange="OnTopicTemplateChange">
+                                <option value="">-- Select Template --</option>
+                                <option value="lora/{device}">Device State</option>
+                                <option value="lora/{device}/set">Device Command</option>
+                                <option value="lora/mock/trigger/{device}">Trigger Device</option>
+                                <option value="lora/mock/trigger/all">Trigger All</option>
+                                <option value="lora/mock/inject">Inject Message</option>
+                                <option value="lora/mock/auto/start">Start Auto Sim</option>
+                                <option value="lora/mock/auto/stop">Stop Auto Sim</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label">Topic</label>
+                            <input type="text" class="form-control font-monospace" @bind="_customTopic" placeholder="lora/..." />
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Payload (JSON)</label>
+                        <textarea class="form-control font-monospace" rows="8" @bind="_customPayload" placeholder='{"key": "value"}'></textarea>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-primary flex-grow-1" @onclick="SendCustomMessage" disabled="@(!MqttService.IsConnected || string.IsNullOrEmpty(_customTopic))">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Z"/>
+                            </svg>
+                            Send Message
+                        </button>
+                        <button class="btn btn-outline-secondary" @onclick="FormatPayload">
+                            Format JSON
+                        </button>
+                        <button class="btn btn-outline-danger" @onclick="ClearCustom">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- Right Panel: Message Log -->
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm" style="max-height: 800px;">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-warning" viewBox="0 0 16 16">
+                        <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                        <path d="M3 5.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zM3 8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9A.5.5 0 0 1 3 8zm0 2.5a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5z"/>
+                    </svg>
+                    LoRa MQTT Log
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ClearMessages">Clear</button>
+            </div>
+            <div class="card-body p-0" style="overflow: hidden;">
+                <div style="height: 600px; overflow-y: auto; overflow-x: hidden;">
+                    @{
+                        var snapshot = ReceivedSnapshot();
+                    }
+                    @if (snapshot.Any())
+                    {
+                        @foreach (var msg in snapshot.OrderByDescending(m => m.ReceivedAt).Take(100))
+                        {
+                            <div class="border-bottom p-3" style="overflow: hidden;">
+                                <div class="d-flex justify-content-between align-items-start mb-2 gap-2">
+                                    <code class="text-warning small text-truncate" style="max-width: 70%;">@msg.Topic</code>
+                                    <small class="text-muted text-nowrap">@msg.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</small>
+                                </div>
+                                <pre class="bg-light rounded p-2 mb-0 small" style="max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word;">@FormatJson(msg.Payload)</pre>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted py-5">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                                <path d="M0 0h1v15h15v1H0V0Zm14.817 3.113a.5.5 0 0 1 .07.704l-4.5 5.5a.5.5 0 0 1-.74.037L7.06 6.767l-3.656 5.027a.5.5 0 0 1-.808-.588l4-5.5a.5.5 0 0 1 .758-.06l2.609 2.61 4.15-5.073a.5.5 0 0 1 .704-.07Z"/>
+                            </svg>
+                            <p class="mb-1">No LoRa messages yet</p>
+                            <small>MQTT messages will appear here</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private readonly CancellationTokenSource _pageCts = new();
+    private string _activeTab = "register";
+    private int _messagesSent;
+    private bool _autoSimRunning;
+    private readonly List<MqttMessage> _receivedMessages = new();
+    private string? _errorMessage;
+
+    // Device registration
+    private string _newDeviceId = "";
+    private string _newDeviceType = "weather";
+    private string _newDeviceManufacturer = "";
+    private string _newDeviceModel = "";
+
+    // Device selection
+    private int _selectedDeviceIndex = 0;
+
+    // Weather sensor values
+    private double _weatherTemp = 18.7;
+    private double _weatherHumidity = 62.0;
+    private double _weatherPressure = 1013.25;
+    private double _windSpeed = 12.3;
+    private int _windDirection = 225;
+    private double _rain = 0.0;
+
+    // Soil sensor values
+    private int _soilMoisture = 35;
+    private double _soilTemp = 16.2;
+    private double _soilEc = 1.2;
+
+    // Meter values
+    private double _meterConsumption = 1234.56;
+    private double _meterFlowRate = 0.5;
+
+    // GPS values
+    private double _gpsLat = 48.1486;
+    private double _gpsLon = 17.1077;
+    private int _gpsAltitude = 145;
+    private double _gpsSpeed = 0;
+
+    // Common LoRa values
+    private int _rssi = -98;
+    private double _snr = 7.5;
+    private double _battery = 3.6;
+
+    // Inject message values
+    private int _injectAddress = 0;
+    private int _injectChannel = 18;
+    private int _injectRssi = -95;
+    private string _injectPayload = "";
+
+    // Custom message
+    private string _customTopic = "";
+    private string _customPayload = "";
+
+    // Mock devices (dynamically registered)
+    private readonly List<MockLoRaDevice> _mockDevices = new();
+
+    private MockLoRaDevice? SelectedDevice => _selectedDeviceIndex >= 0 && _selectedDeviceIndex < _mockDevices.Count
+        ? _mockDevices[_selectedDeviceIndex] : null;
+
+    protected override void OnInitialized()
+    {
+        MqttService.MessageReceived += HandleMessage;
+    }
+
+    private IEnumerable<MqttMessage> ReceivedSnapshot()
+    {
+        lock (_receivedMessages)
+        {
+            return _receivedMessages.ToArray();
+        }
+    }
+
+    private async Task SafePublishAsync(string topic, string payload)
+    {
+        try
+        {
+            var mqtt = MqttService;
+            await mqtt.PublishAsync(topic, payload, cancellationToken: _pageCts.Token);
+            _messagesSent++;
+            _errorMessage = null;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to publish LoRa mock message to {Topic}", topic);
+            _errorMessage = $"Failed to publish to {topic}. See coordinator logs.";
+        }
+    }
+
+    private void HandleMessage(object? sender, MqttMessage message)
+    {
+        if (message.Topic.StartsWith("lora/"))
+        {
+            lock (_receivedMessages)
+            {
+                _receivedMessages.Add(message);
+                if (_receivedMessages.Count > 500)
+                    _receivedMessages.RemoveAt(0);
+            }
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SendDeviceState()
+    {
+        if (SelectedDevice == null) return;
+
+        var payload = SelectedDevice.Type switch
+        {
+            "weather" => JsonSerializer.Serialize(new
+            {
+                temperature = _weatherTemp,
+                pressure = _weatherPressure,
+                humidity = _weatherHumidity,
+                wind_speed = _windSpeed,
+                wind_direction = _windDirection,
+                rain_1h = _rain,
+                battery = _battery,
+                rssi = _rssi,
+                snr = _snr
+            }),
+            "soil" => JsonSerializer.Serialize(new
+            {
+                moisture = _soilMoisture,
+                temperature = _soilTemp,
+                ec = _soilEc,
+                battery = _battery,
+                rssi = _rssi,
+                snr = _snr
+            }),
+            "meter" => JsonSerializer.Serialize(new
+            {
+                consumption = _meterConsumption,
+                flow_rate = _meterFlowRate,
+                battery = (int)(_battery * 27.8),
+                rssi = _rssi,
+                snr = _snr
+            }),
+            "gps" => JsonSerializer.Serialize(new
+            {
+                latitude = _gpsLat,
+                longitude = _gpsLon,
+                altitude = _gpsAltitude,
+                speed = _gpsSpeed,
+                battery = (int)(_battery * 22),
+                rssi = _rssi,
+                snr = _snr
+            }),
+            _ => "{}"
+        };
+
+        await SafePublishAsync($"lora/{SelectedDevice.Id}", payload);
+    }
+
+    private Task TriggerDevice(string deviceId) =>
+        SafePublishAsync($"lora/mock/trigger/{deviceId}", "{}");
+
+    private Task TriggerAllDevices() =>
+        SafePublishAsync("lora/mock/trigger/all", "{}");
+
+    private async Task StartAutoSimulation()
+    {
+        await SafePublishAsync("lora/mock/auto/start", "{}");
+        _autoSimRunning = true;
+    }
+
+    private async Task StopAutoSimulation()
+    {
+        await SafePublishAsync("lora/mock/auto/stop", "{}");
+        _autoSimRunning = false;
+    }
+
+    private Task InjectMessage()
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            address = _injectAddress,
+            channel = _injectChannel,
+            payload = _injectPayload,
+            rssi = _injectRssi,
+            snr = 8.0,
+            timestamp = DateTimeOffset.UtcNow
+        });
+        return SafePublishAsync("lora/mock/inject", payload);
+    }
+
+    private Task SendCustomMessage()
+    {
+        if (string.IsNullOrEmpty(_customTopic)) return Task.CompletedTask;
+        var payload = string.IsNullOrEmpty(_customPayload) ? "{}" : _customPayload;
+        return SafePublishAsync(_customTopic, payload);
+    }
+
+    private async Task RegisterDevice()
+    {
+        if (string.IsNullOrWhiteSpace(_newDeviceId)) return;
+
+        var device = new MockLoRaDevice(_newDeviceId.Trim(), _newDeviceType, _newDeviceManufacturer, _newDeviceModel);
+        await AddRegisteredDeviceAsync(device);
+
+        _newDeviceId = "";
+        _newDeviceManufacturer = "";
+        _newDeviceModel = "";
+    }
+
+    private Task RegisterPreset(string id, string type, string manufacturer, string model) =>
+        AddRegisteredDeviceAsync(new MockLoRaDevice(id, type, manufacturer, model));
+
+    private async Task AddRegisteredDeviceAsync(MockLoRaDevice device)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            id = device.Id,
+            type = device.Type,
+            manufacturer = device.Manufacturer,
+            model = device.Model
+        });
+
+        await SafePublishAsync("lora/mock/devices/add", payload);
+
+        if (!_mockDevices.Any(d => d.Id == device.Id))
+        {
+            _mockDevices.Add(device);
+        }
+    }
+
+    private async Task UnregisterDevice(string deviceId)
+    {
+        var payload = JsonSerializer.Serialize(new { id = deviceId });
+        await SafePublishAsync("lora/mock/devices/remove", payload);
+        _mockDevices.RemoveAll(d => d.Id == deviceId);
+    }
+
+    private async Task ClearAllDevices()
+    {
+        await SafePublishAsync("lora/mock/devices/clear", "{}");
+        _mockDevices.Clear();
+    }
+
+    private void OnTopicTemplateChange(ChangeEventArgs e)
+    {
+        var template = e.Value?.ToString() ?? "";
+        if (string.IsNullOrEmpty(template)) return;
+
+        var deviceId = _mockDevices.FirstOrDefault()?.Id ?? "device_id";
+        _customTopic = template.Replace("{device}", deviceId);
+
+        _customPayload = template switch
+        {
+            "lora/{device}" => """{"temperature":18.7,"humidity":62,"pressure":1013.25,"battery":3.6,"rssi":-98,"snr":7.5}""",
+            "lora/{device}/set" => """{"command":"read","register":0}""",
+            "lora/mock/trigger/{device}" => "{}",
+            "lora/mock/trigger/all" => "{}",
+            "lora/mock/inject" => """{"address":0,"channel":18,"payload":"48656C6C6F","rssi":-95,"snr":8.0}""",
+            "lora/mock/auto/start" => "{}",
+            "lora/mock/auto/stop" => "{}",
+            _ => "{}"
+        };
+    }
+
+    private void FormatPayload()
+    {
+        try
+        {
+            var obj = JsonSerializer.Deserialize<object>(_customPayload);
+            _customPayload = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch { }
+    }
+
+    private void ClearCustom()
+    {
+        _customTopic = "";
+        _customPayload = "";
+    }
+
+    private void ClearMessages()
+    {
+        lock (_receivedMessages) { _receivedMessages.Clear(); }
+    }
+
+    private static string GetDeviceTypeBadge(string type) => type switch
+    {
+        "weather" => "bg-info",
+        "soil" => "bg-success",
+        "meter" => "bg-primary",
+        "gps" => "bg-warning text-dark",
+        _ => "bg-secondary"
+    };
+
+    private static string FormatJson(string payload)
+    {
+        try
+        {
+            var obj = JsonSerializer.Deserialize<object>(payload);
+            return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch { return payload; }
+    }
+
+    public void Dispose()
+    {
+        MqttService.MessageReceived -= HandleMessage;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private record MockLoRaDevice(string Id, string Type, string Manufacturer, string Model);
+}

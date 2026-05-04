@@ -1,0 +1,31 @@
+@inject NavigationManager Navigation
+
+<div class="d-flex justify-content-center align-items-center" style="height: 100vh;">
+    <div class="text-center">
+        <div class="spinner-border text-primary mb-3" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+        <p class="text-muted">Redirecting to login...</p>
+    </div>
+</div>
+
+@code {
+    // Calling NavigateTo during OnInitialized:
+    //   - SSR:          throws NavigationException, framework converts it
+    //                   to a 302 Location response before HTML is flushed.
+    //   - Interactive:  emits a client-side navigation event.
+    // Either way the browser actually leaves this page.
+    protected override void OnInitialized()
+    {
+        // Guard against a loop if somehow rendered on the login route.
+        var uri = new Uri(Navigation.Uri);
+        if (uri.AbsolutePath.StartsWith("/login", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var returnUrl = uri.PathAndQuery;
+        var target = $"/login?returnUrl={Uri.EscapeDataString(returnUrl)}";
+        Navigation.NavigateTo(target, forceLoad: true);
+    }
+}

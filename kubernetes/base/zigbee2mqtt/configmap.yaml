@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zigbee2mqtt-config
+  namespace: hermod
+data:
+  configuration.yaml: |
+    # Zigbee2MQTT Configuration for Hermod
+
+    homeassistant: false
+    permit_join: false
+
+    mqtt:
+      # Must match Zigbee2MqttTopics.BaseTopic and
+      # Hermod:Mqtt:Topics:Zigbee ("zigbee/#") on the coordinator
+      # side; otherwise bridge/devices and state traffic never reach the
+      # device-reconciliation pipeline and z2m devices stay invisible
+      # to the Hermod inventory.
+      base_topic: zigbee
+      server: mqtt://nanomq.hermod.svc.cluster.local:1883
+      keepalive: 60
+      reject_unauthorized: false
+      version: 5
+
+    serial:
+      port: /dev/ttyUSB0
+      adapter: ember   # Sonoff ZBDongle Plus V2 ships with EmberZNet
+                       # firmware on an EFR32MG21 (not CC2652P Z-Stack,
+                       # despite the "Plus" branding implying ZBDongle-P).
+                       # Verified end-to-end with a standalone z2m
+                       # docker run — zstack times out on SYS_PING;
+                       # ember handshakes cleanly.
+      baudrate: 115200
+
+    frontend:
+      port: 8080
+      host: 0.0.0.0
+
+    advanced:
+      log_level: info
+      log_output:
+        - console
+      pan_id: GENERATE
+      ext_pan_id: GENERATE
+      channel: 11
+      network_key: GENERATE
+      transmit_power: 20
+
+    device_options:
+      legacy: false
+
+    availability:
+      active:
+        timeout: 10
+      passive:
+        timeout: 1500

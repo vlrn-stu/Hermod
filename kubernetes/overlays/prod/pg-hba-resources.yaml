@@ -1,0 +1,10 @@
+# pg_hba.conf — hostssl-only, every TCP connection must be TLS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-hba-prod
+data:
+  pg_hba.conf: |
+    local   all             all                                     trust
+    hostssl all             all             0.0.0.0/0               scram-sha-256
+    hostssl all             all             ::/0                    scram-sha-256

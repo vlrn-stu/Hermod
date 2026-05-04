@@ -1,0 +1,188 @@
+# ble2mqtt — Theengs Gateway BLE bridge.
+# theengs-gateway publishes to a localhost mosquitto sidecar which
+# bridges to nanomq:8883 over mTLS (Theengs only speaks server-TLS).
+# ble=0 on kind because node containers lack bluetoothd; Pi5 overlay
+# flips it to 1 with hostNetwork + privileged + dbus mount.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ble2mqtt-config
+data:
+  bridge.conf.tmpl: |
+    # localhost MQTT for Theengs to publish to.
+    listener 1883 127.0.0.1
+    allow_anonymous true
+    persistence false
+    log_dest stdout
+    log_type error
+    log_type warning
+
+    connection nanomq-mtls
+    address nanomq:8883
+    bridge_cafile /mosquitto/tls/ca.crt
+    bridge_certfile /mosquitto/tls/client.crt
+    bridge_keyfile /mosquitto/tls/client.key
+    bridge_insecure false
+    remote_clientid ble2mqtt-bridge
+    remote_username __MQTT_USER__
+    remote_password __MQTT_PASS__
+    keepalive_interval 60
+    cleansession true
+    notifications false
+    try_private false
+    bridge_protocol_version mqttv311
+    bridge_attempt_unsubscribe false
+    # Theengs hardcodes a `BTtoMQTT/<MAC>` segment after whatever `-pt`
+    # prefix you give it (an OMG holdover from multi-radio gateways).
+    # We rewrite it away at the bridge: anything Theengs publishes
+    # locally as `bluetooth/BTtoMQTT/<MAC>` lands on nanomq as
+    # `bluetooth/<MAC>` so Hermod sees clean per-device topics.
+    # `+` matches a single MAC level; LWT and any other non-BTtoMQTT
+    # bluetooth/* topics still go out unrewritten via the second rule.
+    # Mosquitto config doesn't quote prefixes — bare strings only,
+    # `""` is a literal sentinel for "empty prefix" (e.g. LWT below).
+    topic + out 1 bluetooth/BTtoMQTT/ bluetooth/
+    topic bluetooth/LWT out 1 "" ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ble2mqtt
+  labels:
+    app: ble2mqtt
+    component: protocol-translator
+spec:
+  replicas: 1
+  # Recreate (not RollingUpdate): Pi5 overlay enables hostNetwork=true so
+  # mosquitto bridge binds host port 1883 directly. RollingUpdate would
+  # spawn a new pod alongside the old → "Address in use" loop.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ble2mqtt
+  template:
+    metadata:
+      labels:
+        app: ble2mqtt
+        component: protocol-translator
+    spec:
+      initContainers:
+        - name: render-bridge
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sed \
+                -e "s|__MQTT_USER__|${MQTT_USER}|g" \
+                -e "s|__MQTT_PASS__|${MQTT_PASS}|g" \
+                /tmpl/bridge.conf.tmpl > /rendered/mosquitto.conf
+          env:
+            # Per-translator user from hermod-mqtt-users so the ACL rule
+            # `username = "ble2mqtt"` matches and bluetooth/# publishes
+            # are accepted. The legacy hermod-secrets:mqtt-username is
+            # `hermod-service` whose ACL only grants /+/set on each
+            # subtree, so every BLE telemetry publish was silently denied.
+            - name: MQTT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: ble2mqtt-username
+            - name: MQTT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-mqtt-users
+                  key: ble2mqtt-password
+          volumeMounts:
+            - name: bridge-template
+              mountPath: /tmpl
+              readOnly: true
+            - name: bridge-rendered
+              mountPath: /rendered
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 nanomq 8883; do sleep 2; done
+      containers:
+        - name: mqtt-bridge
+          image: eclipse-mosquitto:2.0.18
+          # Skip the official entrypoint — it chowns /mosquitto/{config,tls}
+          # which fails on RO Secret/ConfigMap mounts.
+          command: ["mosquitto"]
+          args: ["-c", "/mosquitto/config/mosquitto.conf"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: bridge-rendered
+              mountPath: /mosquitto/config/mosquitto.conf
+              subPath: mosquitto.conf
+              readOnly: true
+            - name: bridge-tls
+              mountPath: /mosquitto/tls
+              readOnly: true
+          # exec probe (not tcpSocket): mosquitto listens on 127.0.0.1 but
+          # kubelet probes POD_IP:1883, which a loopback-only listener
+          # rejects — looked like crashloop, was the probe killing healthy
+          # mosquitto every 30s.
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-x", "mosquitto"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+        - name: theengs-gateway
+          image: theengs/gateway:latest
+          imagePullPolicy: IfNotPresent
+          # Theengs lives in /opt/venv. -b 0 disables BLE scanning on kind
+          # (no bluetoothd in the node container); Pi5 overlay flips to 1
+          # and adds privileged + /var/run/dbus hostPath.
+          command: ["bash", "-c"]
+          args:
+            - |
+              source /opt/venv/bin/activate
+              # -P port (lowercase -p is password), -pt publish topic,
+              # -Lt LWT topic, -D 0 no Home Assistant discovery,
+              # -b 0 BLE off (kind only).
+              exec python -m TheengsGateway -H 127.0.0.1 -P 1883 \
+                -pt bluetooth \
+                -Lt bluetooth/LWT \
+                -D 0 \
+                -b 0
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        - name: bridge-template
+          configMap:
+            name: ble2mqtt-config
+        - name: bridge-rendered
+          emptyDir: {}
+        - name: bridge-tls
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-ble2mqtt-client-tls
+                  items:
+                    - key: tls.crt
+                      path: client.crt
+                    - key: tls.key
+                      path: client.key

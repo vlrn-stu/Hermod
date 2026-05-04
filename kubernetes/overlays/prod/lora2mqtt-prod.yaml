@@ -1,0 +1,129 @@
+# lora2mqtt prod — native MQTT mTLS to nanomq:8883. Hardware passthrough
+# lives in lora2mqtt-hardware-patch.yaml; this layer rewires only the
+# broker connection.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lora2mqtt
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: build-ca-bundle
+          image: lora2mqtt:latest
+          imagePullPolicy: Never
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /etc/ssl/certs/ca-certificates.crt /out/ca-certificates.crt
+              cat /ca/ca.crt >> /out/ca-certificates.crt
+          volumeMounts:
+            - name: ca-cert
+              mountPath: /ca
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /out
+        - name: prep-tls
+          # Materialize Secret-symlink files into real files (keys already
+          # RSA PEM via `openssl genrsa -traditional`).
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp -L /tls-src/tls.crt /tls/client.crt
+              cp -L /tls-src/tls.key /tls/client.key
+              cp -L /tls-src/ca.crt /tls/ca.crt
+              chmod 0644 /tls/*.crt
+              chmod 0600 /tls/*.key
+          volumeMounts:
+            - name: lora2mqtt-tls
+              mountPath: /tls-src
+              readOnly: true
+            - name: lora2mqtt-tls-real
+              mountPath: /tls
+        - name: wait-for-vault42
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 vault42.hermod-prod.svc.cluster.local 8443; do sleep 2; done
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 nanomq.hermod-prod.svc.cluster.local 8883; do sleep 2; done
+      containers:
+        - name: lora2mqtt
+          env:
+            # Asserted explicitly in the prod overlay (also set in base) so
+            # the Production runtime guard against Hermod:Security:AuthBypass
+            # in src/LoRa2MQTT/LoRa2MQTT.Service/Program.cs is locally auditable.
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+            # Mock on kind (no Waveshare HAT); Pi5 overlay flips to false.
+            # Without mock, LoRaAdapter times out and the bridge shows
+            # Offline in the UI.
+            - name: LoRa__MockMode
+              value: "true"
+            - name: Mqtt__Host
+              value: "nanomq.hermod-prod.svc.cluster.local"
+            - name: Mqtt__Port
+              value: "8883"
+            - name: Vault42__Authority
+              value: "https://vault42.hermod-prod.svc.cluster.local:8443"
+            - name: Hermod__Security__VaultRequireHttps
+              value: "true"
+            - name: Mqtt__Tls__UseTls
+              value: "true"
+            - name: Mqtt__Tls__CaBundlePath
+              value: "/etc/lora2mqtt/tls/ca.crt"
+            - name: Mqtt__Tls__AllowUntrustedCertificates
+              value: "true"
+            - name: Mqtt__Tls__IgnoreCertificateChainErrors
+              value: "true"
+            - name: Mqtt__Tls__ClientCertificatePath
+              value: "/etc/lora2mqtt/tls/client.crt"
+            - name: Mqtt__Tls__ClientKeyPath
+              value: "/etc/lora2mqtt/tls/client.key"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: lora2mqtt-tls-real
+              mountPath: /etc/lora2mqtt/tls
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-certificates.crt
+              readOnly: true
+      volumes:
+        - name: lora2mqtt-tls
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-lora2mqtt-client-tls
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key
+        - name: lora2mqtt-tls-real
+          emptyDir: {}
+        - name: ca-cert
+          secret:
+            secretName: internal-ca
+        - name: ca-bundle
+          emptyDir: {}

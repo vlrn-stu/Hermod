@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wifi2mqtt-config
+  namespace: hermod
+  labels:
+    app: wifi2mqtt
+    component: protocol-translator
+data:
+  # Template — render-config init container in wifi2mqtt/deployment.yaml
+  # substitutes __BRIDGE_USER__ / __BRIDGE_PASSWORD__ from hermod-secrets
+  # at boot (mosquitto 2.x has no env interpolation).
+  mosquitto.conf.tmpl: |
+    # wifi2mqtt — MQTT bridge for Wi-Fi IoT devices.
+    # Devices (Tasmota, ESPHome, Shelly) connect locally; bridge forwards
+    # to nanomq under the wifi/ prefix.
+
+    listener 1883 0.0.0.0
+    allow_anonymous true
+    persistence false
+    log_dest stdout
+    log_type error
+    log_type warning
+    log_type notice
+
+    # Bridge to nanomq. Requires max_packet_size=256KB on nanomq side —
+    # default 10KB trips during CONNECT + initial subscribe.
+    connection hermod-upstream
+    address nanomq.hermod.svc.cluster.local:1883
+    remote_clientid wifi2mqtt-bridge
+    remote_username __BRIDGE_USER__
+    remote_password __BRIDGE_PASSWORD__
+    keepalive_interval 60
+    cleansession true
+    notifications false
+    try_private false
+    bridge_protocol_version mqttv311
+    bridge_attempt_unsubscribe false
+
+    # Outbound: every local topic becomes wifi/<topic> remotely.
+    topic # out 1 "" wifi/
+
+    # Inbound: rule-engine commands need to reach devices. Without an
+    # `in` direction, wifi/<device>/cmnd/... is published upstream but
+    # never delivered down. Patterns cover Home Assistant /set, Tasmota
+    # /cmnd/#, and the ESP32 e-paper /message legacy topic.
+    topic +/set in 1 "" wifi/
+    topic +/cmnd/# in 1 "" wifi/
+    topic +/message in 1 "" wifi/

@@ -1,0 +1,192 @@
+---
+# Health check role: verifies the Hermod stack is fully operational.
+# Run standalone via playbooks/verify.yml or as the final step in install/update.
+
+# ---------------------------------------------------------------------------
+# Pod readiness checks
+# ---------------------------------------------------------------------------
+
+- name: healthcheck | Get pod list in {{ hermod_namespace }}
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get pods -n {{ hermod_namespace }}
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}'
+  register: _pod_list
+  changed_when: false
+  tags: [healthcheck, pods]
+
+- name: healthcheck | Show all pods
+  ansible.builtin.debug:
+    var: _pod_list.stdout_lines
+  tags: [healthcheck, pods]
+
+- name: healthcheck | Verify each expected pod has at least one Running instance
+  # Match by app label via JSONPath, not regex on `kubectl get pods`
+  # output. The previous regex `<name>.*Running` matched any pod whose
+  # name contained the label and whose status field anywhere on the
+  # line was Running — false-positives if a stale `<name>-old` pod sat
+  # next to a Pending `<name>-new` one. JSONPath against the label
+  # selector is exact and tolerates pod-name churn from rollouts.
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get pods -n {{ hermod_namespace }}
+      -l app={{ item }}
+      -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}'
+  register: _pod_running
+  changed_when: false
+  failed_when: _pod_running.stdout | trim == ""
+  loop: "{{ hermod_expected_pods }}"
+  tags: [healthcheck, pods]
+
+# ---------------------------------------------------------------------------
+# Network connectivity checks
+# ---------------------------------------------------------------------------
+
+- name: healthcheck | Get NanoMQ MQTT NodePort (empty when ClusterIP)
+  # The base Service is type: ClusterIP, so jsonpath returns an empty
+  # string. The wait_for / fail pair below gates on
+  # _nanomq_nodeport.stdout != "" so the ClusterIP path is a no-op
+  # rather than a spurious failure. The in-cluster wait-for-nanomq
+  # init container on every translator pod plus this role's earlier
+  # pod-running assertion are the authoritative broker liveness
+  # checks; probing a NodePort that no longer exists would just tell
+  # us "the Service type flipped", not "the broker is down".
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get svc nanomq -n {{ hermod_namespace }}
+      -o jsonpath='{.spec.ports[?(@.port==1883)].nodePort}'
+  register: _nanomq_nodeport
+  changed_when: false
+  failed_when: false
+  tags: [healthcheck, network]
+
+- name: healthcheck | Check NanoMQ MQTT NodePort is reachable (skipped on ClusterIP)
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ _nanomq_nodeport.stdout | int }}"
+    timeout: 15
+    state: started
+  register: _mqtt_check
+  failed_when: false
+  when: _nanomq_nodeport.stdout != ""
+  tags: [healthcheck, network]
+
+- name: healthcheck | Fail if NanoMQ NodePort exists but is not reachable
+  ansible.builtin.fail:
+    msg: >
+      NanoMQ MQTT is not reachable on NodePort {{ _nanomq_nodeport.stdout }}
+      (127.0.0.1). Check that nanomq is Running and the NodePort service is active:
+        microk8s kubectl get svc nanomq -n {{ hermod_namespace }}
+  when: >
+    _nanomq_nodeport.stdout != "" and
+    (_mqtt_check.failed | default(false))
+  tags: [healthcheck, network]
+
+# The external MQTT entry point is the wifi2mqtt mosquitto bridge
+# Service (NodePort 32183 by default), not nanomq itself. Probe it
+# so the summary can tell the operator where to send Wi-Fi devices.
+- name: healthcheck | Get wifi2mqtt bridge NodePort (empty if not exposed)
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get svc wifi2mqtt -n {{ hermod_namespace }}
+      -o jsonpath='{.spec.ports[?(@.port==1883)].nodePort}'
+  register: _wifi2mqtt_nodeport
+  changed_when: false
+  failed_when: false
+  tags: [healthcheck, network]
+
+- name: healthcheck | Check wifi2mqtt NodePort is reachable (skipped if ClusterIP)
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ _wifi2mqtt_nodeport.stdout | int }}"
+    timeout: 15
+    state: started
+  register: _wifi2mqtt_check
+  failed_when: false
+  when: _wifi2mqtt_nodeport.stdout != ""
+  tags: [healthcheck, network]
+
+- name: healthcheck | Fail if wifi2mqtt NodePort exists but is not reachable
+  ansible.builtin.fail:
+    msg: >
+      wifi2mqtt MQTT bridge is not reachable on NodePort
+      {{ _wifi2mqtt_nodeport.stdout }} (127.0.0.1). Check that wifi2mqtt is
+      Running and the Service is NodePort:
+        microk8s kubectl get svc wifi2mqtt -n {{ hermod_namespace }}
+  when: >
+    _wifi2mqtt_nodeport.stdout != "" and
+    (_wifi2mqtt_check.failed | default(false))
+  tags: [healthcheck, network]
+
+- name: healthcheck | Get Hermod Coordinator NodePort
+  ansible.builtin.command:
+    cmd: >
+      microk8s kubectl get svc hermod-coordinator -n {{ hermod_namespace }}
+      -o jsonpath='{.spec.ports[?(@.port=={{ hermod_coordinator_port }})].nodePort}'
+  register: _coordinator_nodeport
+  changed_when: false
+  failed_when: false
+  tags: [healthcheck, network]
+
+- name: healthcheck | Probe Hermod Coordinator anonymous health endpoint (NodePort only)
+  # Hermod Coordinator is deployed as ClusterIP; `_coordinator_nodeport.stdout`
+  # is empty unless an overlay patches the Service to NodePort. The URI
+  # probe is skipped in that case — the earlier Pod-Running check plus
+  # the kubelet's own readinessProbe on the coordinator deployment are
+  # the authoritative readiness signals. If the overlay adds NodePort
+  # (e.g. a LAN-exposed prod variant), this probe kicks in.
+  ansible.builtin.uri:
+    # /healthz is the AllowAnonymous Kubernetes probe wired in
+    # Program.cs:140 — returns 200 unconditionally when the service
+    # is up.
+    url: "http://127.0.0.1:{{ _coordinator_nodeport.stdout }}/healthz"
+    method: GET
+    status_code: 200
+    timeout: 15
+  register: _coordinator_check
+  failed_when: false
+  when: _coordinator_nodeport.stdout != ""
+  tags: [healthcheck, network]
+
+- name: healthcheck | Fail if Coordinator NodePort exists but is not responding
+  ansible.builtin.fail:
+    msg: >
+      Hermod Coordinator is not responding on port
+      {{ _coordinator_nodeport.stdout }}.
+      Status: {{ _coordinator_check.status | default('no connection') }}.
+      Check logs: microk8s kubectl logs -f deployment/hermod-coordinator -n {{ hermod_namespace }}
+  when: >
+    _coordinator_nodeport.stdout != "" and
+    (_coordinator_check.failed | default(false))
+  tags: [healthcheck, network]
+
+# ---------------------------------------------------------------------------
+# Summary printout (shown after a successful install)
+# ---------------------------------------------------------------------------
+
+- name: healthcheck | Get node IP address
+  ansible.builtin.command:
+    cmd: hostname -I
+  register: _node_ip
+  changed_when: false
+  tags: [healthcheck, summary]
+
+- name: healthcheck | Print access summary
+  ansible.builtin.debug:
+    msg:
+      - "============================================================"
+      - " Hermod deployment is healthy!"
+      - "============================================================"
+      - " Node IP:          {{ _node_ip.stdout.split()[0] }}"
+      - ""
+      - " Hermod Dashboard: http://{{ _node_ip.stdout.split()[0] }}:{{ _coordinator_nodeport.stdout if _coordinator_nodeport.stdout != '' else hermod_coordinator_port }}/ ({{ 'NodePort' if _coordinator_nodeport.stdout != '' else 'ClusterIP — reach via microk8s kubectl port-forward' }})"
+      - " Hermod API docs:  http://{{ _node_ip.stdout.split()[0] }}:{{ _coordinator_nodeport.stdout if _coordinator_nodeport.stdout != '' else hermod_coordinator_port }}/api-docs"
+      - " MQTT broker:      nanomq.{{ hermod_namespace }}.svc.cluster.local:{{ hermod_mqtt_port }} ({{ 'exposed on NodePort ' + _nanomq_nodeport.stdout if _nanomq_nodeport.stdout != '' else 'ClusterIP, internal translators only' }})"
+      - " External MQTT:    {{ (_node_ip.stdout.split()[0] ~ ':' ~ _wifi2mqtt_nodeport.stdout ~ ' (wifi2mqtt bridge, wifi/ prefix)') if _wifi2mqtt_nodeport.stdout != '' else 'n/a — wifi2mqtt Service is ClusterIP; publish via port-forward or expose via NodePort/LoadBalancer' }}"
+      - ""
+      - " Logs (coordinator):"
+      - "   microk8s kubectl logs -f deployment/hermod-coordinator -n {{ hermod_namespace }}"
+      - " All pods:"
+      - "   microk8s kubectl get pods -n {{ hermod_namespace }}"
+      - "============================================================"
+  tags: [healthcheck, summary]

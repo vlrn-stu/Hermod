@@ -1,0 +1,217 @@
+# Coord prod — HTTPS on :42069 (Kestrel), mTLS to nanomq:8883,
+# Postgres TLS-required, HTTPS to vault42:8443.
+# Probes use scheme: HTTPS — kubelet completes the handshake but
+# does NOT verify the chain, so self-signed certs are fine.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermod-coordinator
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: build-ca-bundle
+          # Append internal-ca to the system trust store. Same base
+          # image as coord so the ca-certificates.crt path matches
+          # what .NET reads at runtime.
+          image: hermod-coordinator:latest
+          imagePullPolicy: Never
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /etc/ssl/certs/ca-certificates.crt /out/ca-certificates.crt
+              cat /ca/ca.crt >> /out/ca-certificates.crt
+          volumeMounts:
+            - name: tls-ca
+              mountPath: /ca
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /out
+        - name: prep-tls
+          # Materialize Secret symlinks into real files —
+          # X509Certificate2.CreateFromPemFile on .NET 9 trips on the
+          # symlink chain k8s uses for projected Secrets.
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp -L /server-src/tls.crt /server/tls.crt
+              cp -L /server-src/tls.key /server/tls.key
+              cp -L /client-src/tls.crt /client/tls.crt
+              cp -L /client-src/tls.key /client/tls.key
+              chmod 0644 /server/tls.crt /client/tls.crt
+              chmod 0600 /server/tls.key /client/tls.key
+          volumeMounts:
+            - name: tls-server-src
+              mountPath: /server-src
+              readOnly: true
+            - name: tls-server-real
+              mountPath: /server
+            - name: tls-client-src
+              mountPath: /client-src
+              readOnly: true
+            - name: tls-client-real
+              mountPath: /client
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 nanomq.hermod-prod.svc.cluster.local 8883; do sleep 2; done
+        - name: wait-for-vault42
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - until nc -z -w 2 vault42.hermod-prod.svc.cluster.local 8443; do sleep 2; done
+      containers:
+        - name: hermod-coordinator
+          env:
+            # Asserted explicitly in the prod overlay (also set in base) so
+            # the Production runtime guard against Hermod:Security:AuthBypass
+            # in src/Hermod.Coordinator/Program.cs is locally auditable.
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+            - name: ASPNETCORE_URLS
+              value: "https://+:42069"
+            - name: ASPNETCORE_HTTPS_PORT
+              value: "42069"
+            # Live Secret mount (~30s sync on rotation). Kestrel's
+            # ServerCertificateSelector re-reads on each handshake when
+            # mtime advances — hot-reload without pod restart.
+            - name: ASPNETCORE_Kestrel__Certificates__Default__Path
+              value: "/etc/hermod/tls/server-live/tls.crt"
+            - name: ASPNETCORE_Kestrel__Certificates__Default__KeyPath
+              value: "/etc/hermod/tls/server-live/tls.key"
+            - name: Hermod__Mqtt__Host
+              value: "nanomq.hermod-prod.svc.cluster.local"
+            - name: Hermod__Mqtt__Port
+              value: "8883"
+            - name: Hermod__Mqtt__Tls__UseTls
+              value: "true"
+            - name: Hermod__Mqtt__Tls__CaBundlePath
+              value: "/etc/hermod/tls/ca/ca.crt"
+            # AllowUntrustedCertificates lets MQTTnet trust our internal
+            # CA via WithClientCertificates without patching the OS trust
+            # store at runtime (which .NET caches).
+            - name: Hermod__Mqtt__Tls__AllowUntrustedCertificates
+              value: "true"
+            - name: Hermod__Mqtt__Tls__IgnoreCertificateChainErrors
+              value: "true"
+            - name: Hermod__Mqtt__Tls__ClientCertificatePath
+              value: "/etc/hermod/tls/client/tls.crt"
+            - name: Hermod__Mqtt__Tls__ClientKeyPath
+              value: "/etc/hermod/tls/client/tls.key"
+            - name: Hermod__Database__ConnectionString
+              value: "Host=postgres.hermod-prod.svc.cluster.local;Port=5432;Database=hermod;Username=hermod_app;SSL Mode=VerifyFull;Trust Server Certificate=false;Root Certificate=/etc/hermod/tls/ca/ca.crt"
+            - name: Vault42__Authority
+              value: "https://vault42.hermod-prod.svc.cluster.local:8443"
+            - name: Hermod__Security__VaultRequireHttps
+              value: "true"
+            # Vault42 reserves the "admin" role for its admins-seed
+            # array; we don't seed any admin since Vault42 super_admin
+            # grants auth-service-side privileges that should never be
+            # reachable from the Hermod UI. Bind the dashboard Admin
+            # policy onto the operator role instead, so the seeded
+            # operator account satisfies Operator AND Admin checks.
+            - name: Hermod__Auth__AdminRole
+              value: "operator"
+            # Internal-CA pinning for outbound HTTPS (Vault42 + YARP
+            # translator clusters). All three must be set together; a
+            # partial config throws on coord boot. Mounted via the
+            # internal-ca + tls-client-cert volumes below.
+            - name: Hermod__Security__InternalCAPath
+              value: "/etc/hermod/tls/ca/ca.crt"
+            - name: Hermod__Security__ClientCertPath
+              value: "/etc/hermod/tls/client/tls.crt"
+            - name: Hermod__Security__ClientKeyPath
+              value: "/etc/hermod/tls/client/tls.key"
+            # Per-topic ingress limiter. Rate cap and dedup are
+            # independently switchable; prod runs both. Counters land
+            # in /metrics as hermod_topic_limited_{rate,dedup}_total.
+            - name: Hermod__RateLimit__Enabled
+              value: "true"
+            - name: Hermod__RateLimit__DedupEnabled
+              value: "true"
+            - name: Hermod__RateLimit__DefaultRatePerSecond
+              value: "1"
+            - name: Hermod__RateLimit__DefaultBurst
+              value: "10"
+            - name: Hermod__RateLimit__DedupWindowSeconds
+              value: "5"
+            - name: Hermod__RateLimit__MaxTrackedKeys
+              value: "4096"
+            # Per-protocol bidirectional aggregate limiter — second clamp
+            # alongside the per-topic one. Per-(protocol, direction) buckets
+            # are configured at runtime via the Settings UI; until this
+            # master switch is on, those overrides are inert.
+            - name: Hermod__RateLimit__ProtocolLimits__Enabled
+              value: "true"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          volumeMounts:
+            - name: tls-ca
+              mountPath: /etc/hermod/tls/ca
+              readOnly: true
+            - name: tls-server-real
+              mountPath: /etc/hermod/tls/server
+              readOnly: true
+            # Direct Secret mount for Kestrel hot-reload (~30s sync).
+            - name: tls-server-src
+              mountPath: /etc/hermod/tls/server-live
+              readOnly: true
+            - name: tls-client-real
+              mountPath: /etc/hermod/tls/client
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-certificates.crt
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 42069
+              scheme: HTTPS
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 30
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: 42069
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 15
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 42069
+              scheme: HTTPS
+            failureThreshold: 30
+            periodSeconds: 10
+      volumes:
+        - name: tls-ca
+          secret:
+            secretName: internal-ca
+        - name: tls-server-src
+          secret:
+            secretName: hermod-coord-server-tls
+        - name: tls-server-real
+          emptyDir: {}
+        - name: tls-client-src
+          secret:
+            secretName: hermod-coord-client-tls
+        - name: tls-client-real
+          emptyDir: {}
+        - name: ca-bundle
+          emptyDir: {}

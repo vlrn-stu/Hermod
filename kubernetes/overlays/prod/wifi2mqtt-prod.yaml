@@ -1,0 +1,172 @@
+# wifi2mqtt prod — TLS-only listener on :8883, mTLS bridge to nanomq:8883.
+# ACL pins each device to wifi/*; only this broker is exposed to Wi-Fi
+# devices, bridge fans them into the cluster under the wifi/ prefix.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wifi2mqtt-config
+  namespace: hermod
+data:
+  acl.conf: |
+    # Devices: deny-by-default, only wifi/* allowed.
+    topic readwrite wifi/#
+    # Bridge user needs to read everything it forwards.
+    user __BRIDGE_USER__
+    topic readwrite #
+  mosquitto.conf.tmpl: |
+    # TLS-only, no plaintext :1883.
+    listener 8883 0.0.0.0
+    cafile /mosquitto/tls/ca.crt
+    certfile /mosquitto/tls/server.crt
+    keyfile /mosquitto/tls/server.key
+    require_certificate false
+    allow_anonymous false
+    password_file /mosquitto/config/passwd
+    acl_file /mosquitto/config/acl.conf
+    persistence false
+    log_dest stdout
+    log_type error
+    log_type warning
+    log_type notice
+
+    # mTLS bridge upstream — mosquitto-client-tls identifies this broker
+    # to nanomq (which runs verify_peer=true).
+    connection hermod-upstream
+    address nanomq.hermod-prod.svc.cluster.local:8883
+    bridge_cafile /mosquitto/tls/ca.crt
+    bridge_certfile /mosquitto/tls/client.crt
+    bridge_keyfile /mosquitto/tls/client.key
+    bridge_insecure false
+    remote_clientid wifi2mqtt-bridge
+    remote_username __BRIDGE_USER__
+    remote_password __BRIDGE_PASSWORD__
+    keepalive_interval 60
+    cleansession true
+    notifications false
+    try_private false
+    bridge_protocol_version mqttv311
+    bridge_attempt_unsubscribe false
+
+    topic # out 1 "" wifi/
+    topic +/set in 1 "" wifi/
+    topic +/cmnd/# in 1 "" wifi/
+    topic +/message in 1 "" wifi/
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wifi2mqtt
+  namespace: hermod
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: render-config
+          # mosquitto image required for mosquitto_passwd hashing.
+          image: eclipse-mosquitto:2.0.18
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              sed \
+                -e "s|__BRIDGE_USER__|${BRIDGE_USER}|g" \
+                -e "s|__BRIDGE_PASSWORD__|${BRIDGE_PASSWORD}|g" \
+                /tmpl/mosquitto.conf.tmpl > /rendered/mosquitto.conf
+              sed -e "s|__BRIDGE_USER__|${BRIDGE_USER}|g" \
+                /tmpl/acl.conf > /rendered/acl.conf
+              # mosquitto 2.x requires hashed passwd (-b batch, -c create).
+              touch /rendered/passwd
+              chmod 0700 /rendered/passwd /rendered/acl.conf
+              mosquitto_passwd -b -c /rendered/passwd "${BRIDGE_USER}" "${BRIDGE_PASSWORD}"
+              chmod 0700 /rendered/passwd /rendered/acl.conf
+              # Stage TLS certs into a writable emptyDir — mosquitto's
+              # entrypoint chowns and fights the projected Secret mount.
+              cp /tls-source/ca.crt /tls-source/server.crt /tls-source/server.key \
+                 /tls-source/client.crt /tls-source/client.key /tls/
+              chmod 0644 /tls/*.crt /tls/ca.crt
+              chmod 0600 /tls/*.key
+          env:
+            - name: BRIDGE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-secrets
+                  key: mqtt-username
+            - name: BRIDGE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: hermod-secrets
+                  key: mqtt-password
+          volumeMounts:
+            - name: wifi2mqtt-config-template
+              mountPath: /tmpl
+              readOnly: true
+            - name: wifi2mqtt-config-rendered
+              mountPath: /rendered
+            - name: tls-source
+              mountPath: /tls-source
+              readOnly: true
+            - name: mosquitto-tls
+              mountPath: /tls
+        - name: wait-for-nanomq
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z -w 2 nanomq.hermod-prod.svc.cluster.local 8883; do sleep 2; done
+      containers:
+        - name: mosquitto
+          ports:
+            - name: mqtt-tls
+              containerPort: 8883
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: wifi2mqtt-config-rendered
+              mountPath: /mosquitto/config
+            - name: mosquitto-tls
+              mountPath: /mosquitto/tls
+          livenessProbe:
+            tcpSocket:
+              port: 8883
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 8883
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: mosquitto-tls
+          emptyDir: {}
+        - name: tls-source
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret:
+                  name: internal-ca
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - secret:
+                  name: hermod-mosquitto-server-tls
+                  items:
+                    - key: tls.crt
+                      path: server.crt
+                    - key: tls.key
+                      path: server.key
+              - secret:
+                  name: hermod-mosquitto-client-tls
+                  items:
+                    - key: tls.crt
+                      path: client.crt
+                    - key: tls.key
+                      path: client.key

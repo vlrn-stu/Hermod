@@ -1,0 +1,36 @@
+# prod-pi-letsencrypt-cloudflare-tunnel-active — ACTIVE Cloudflare Tunnel.
+#
+# !!! THIS OVERLAY EXPOSES THE COORDINATOR PUBLICLY THROUGH CLOUDFLARE !!!
+# Apply only when:
+#   * the parked overlay `prod-pi-letsencrypt-cloudflare-tunnel` has been
+#     applied and the cloudflared-token Secret is present
+#   * a public hostname is configured in the Cloudflare Zero Trust
+#     dashboard pointing at hermod-coordinator.hermod-prod.svc:42069
+#   * you are ready for the world to reach hermod.<your-domain>
+#
+# This overlay scales the cloudflared Deployment from 0 to 2 and flips
+# Coord HSTS preload + IncludeSubDomains on (safe because the cert is
+# now publicly trusted).
+#
+# Cloudflare terminates the public TLS at its edge — Cloudflare sees
+# request plaintext between browser and Pi. Acceptable for a homelab
+# / thesis demo. For end-to-end TLS to the Pi, use the cert-manager
+# DNS-01 path in `prod-pi-letsencrypt-ingress` instead.
+#
+# Deploy: `kubectl apply -k kubernetes/overlays/prod-pi-letsencrypt-cloudflare-tunnel-active/`
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hermod-prod
+
+resources:
+  - ../prod-pi-letsencrypt-cloudflare-tunnel
+
+patches:
+  - path: cloudflared-scale-up.yaml
+    target:
+      kind: Deployment
+      name: cloudflared
+  # HSTS preload comes from the parent overlay (parked tunnel already
+  # patches Coord with the same env vars); no need to re-apply here.

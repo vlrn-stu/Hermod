@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nanomq-config
+  namespace: hermod
+data:
+  # Template — render-config init container substitutes the HTTP admin
+  # creds from the nanomq-http-admin Secret. They MUST NOT live in this
+  # ConfigMap (checked into git).
+  nanomq.conf.tmpl: |
+    mqtt {
+      property_size = 32
+      max_packet_size = 256KB
+      max_mqueue_len = 2048
+      retry_interval = 10s
+      keepalive_multiplier = 1.25
+    }
+
+    # TCP listener — must be top-level, NOT nested inside mqtt {}.
+    listeners.tcp {
+      bind = "0.0.0.0:1883"
+    }
+
+    # Stub silences `conf_basic_parse_ver2: Read config nanomq ws failed!`
+    # at startup. No Hermod client uses ws MQTT and the Service doesn't
+    # expose 8083, so this is internal-only.
+    listeners.ws {
+      bind = "0.0.0.0:8083/mqtt"
+    }
+
+    http_server {
+      port = 8081
+      limit_conn = 32
+      username = __HTTP_USER__
+      password = __HTTP_PASSWORD__
+      auth_type = basic
+    }
+
+    # Level=error: nanomq 0.21's reap_worker pool emits a huge volume
+    # of WARN lines on every client disconnect (~90% of log output).
+    log {
+      to = [console]
+      level = error
+    }
+
+    # To flip to deny-by-default, replace this block with:
+    #   auth {
+    #     allow_anonymous = false
+    #     no_match = deny
+    #     deny_action = disconnect
+    #     password = { file = "/etc/nanomq_pwd.conf" }
+    #   }
+    # nanomq_pwd.conf is already mounted; every translator sends the
+    # same shared credential.
+    auth {
+      allow_anonymous = true
+      no_match = allow
+      deny_action = ignore
+    }

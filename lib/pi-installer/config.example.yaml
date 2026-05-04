@@ -1,0 +1,32 @@
+# Provisioning config for hermod-pi.
+# Copy to ./config.yaml (or anywhere) and pass to:  hermod-pi flash config.yaml
+#
+# Schema is STRICT — unknown keys abort with a clear error. See image-prep/prep.py
+# CONFIG_SCHEMA for the authoritative definition.
+
+# REQUIRED — RFC 1123 strict: lowercase ASCII, starts with a letter, <= 63 chars.
+hostname: hermod-edge-01
+
+# Optional — must be a real IANA timezone (zoneinfo). Default: UTC.
+timezone: Etc/UTC
+
+# Optional — Linux username the Pi boots with. Default: hermod.
+username: hermod
+
+# Optional — passwordless sudo for the created user. Default: true.
+# Set to false to require sudo password (you will then need ansible-vault).
+sudo_nopasswd: true
+
+# Optional — system locale. Default: en_US.UTF-8.
+locale: en_US.UTF-8
+
+# Optional — extra shell commands run at first boot (after SSH is up).
+# Strings only, no embedded newlines. Keep it short; ansible handles the heavy lifting.
+# runcmd:
+#   - echo "first boot $(date -u)" >> /var/log/hermod-first-boot.log
+
+# Optional — WiFi. OMIT this entire block to use Ethernet + DHCP (recommended).
+# wifi:
+#   ssid: MyWiFi
+#   passphrase: correcthorsebatterystaple
+#   country: SK   # ISO 3166-1 alpha-2 (regulatory domain)

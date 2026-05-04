@@ -1,0 +1,1156 @@
+@page "/mock/zigbee"
+@using Hermod.Core.Interfaces
+@using Hermod.Core.Models
+@using System.Text.Json
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+@inject IMqttService MqttService
+@inject ILogger<MockZigbee> Logger
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>ZigBee2MQTT Mock - Hermod</PageTitle>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger d-flex justify-content-between align-items-center mb-3">
+        <span>@_errorMessage</span>
+        <button class="btn btn-sm btn-outline-light" @onclick="() => _errorMessage = null">Dismiss</button>
+    </div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="mb-1 fw-bold">
+            <span class="text-success">ZigBee2MQTT</span> Mock
+        </h1>
+        <p class="text-muted mb-0">Comprehensive ZigBee2MQTT message simulation for testing</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <span class="badge @(MqttService.IsConnected ? "bg-success" : "bg-danger") fs-6">
+            @(MqttService.IsConnected ? "MQTT Connected" : "MQTT Disconnected")
+        </span>
+        <a href="/mock" class="btn btn-outline-secondary btn-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+            </svg>
+            Back to Mock
+        </a>
+    </div>
+</div>
+
+<!-- Stats Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-1">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages Sent</h6>
+                <h2 class="mb-0 fw-bold">@_messagesSent</h2>
+                <small class="text-white-50">This session</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-3">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Bridge Status</h6>
+                <h2 class="mb-0 fw-bold">@(_bridgeOnline ? "Online" : "Offline")</h2>
+                <small class="text-white-50">Simulated state</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-4">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Mock Devices</h6>
+                <h2 class="mb-0 fw-bold">@_mockDevices.Count</h2>
+                <small class="text-white-50">Available presets</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm h-100 hermod-gradient-2">
+            <div class="card-body text-white">
+                <h6 class="text-white-50 mb-2">Messages Received</h6>
+                <h2 class="mb-0 fw-bold">@_receivedMessages.Count</h2>
+                <small class="text-white-50">From MQTT</small>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Content Tabs -->
+<ul class="nav nav-tabs mb-4" id="zigbeeTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "bridge" ? "active" : "")" @onclick='() => _activeTab = "bridge"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M6.5 6a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3z"/>
+                <path d="M5.5.5a.5.5 0 0 0-1 0V2A2.5 2.5 0 0 0 2 4.5H.5a.5.5 0 0 0 0 1H2v1H.5a.5.5 0 0 0 0 1H2v1H.5a.5.5 0 0 0 0 1H2v1H.5a.5.5 0 0 0 0 1H2A2.5 2.5 0 0 0 4.5 14v1.5a.5.5 0 0 0 1 0V14h1v1.5a.5.5 0 0 0 1 0V14h1v1.5a.5.5 0 0 0 1 0V14h1v1.5a.5.5 0 0 0 1 0V14a2.5 2.5 0 0 0 2.5-2.5h1.5a.5.5 0 0 0 0-1H14v-1h1.5a.5.5 0 0 0 0-1H14v-1h1.5a.5.5 0 0 0 0-1H14v-1h1.5a.5.5 0 0 0 0-1H14A2.5 2.5 0 0 0 11.5 2V.5a.5.5 0 0 0-1 0V2h-1V.5a.5.5 0 0 0-1 0V2h-1V.5a.5.5 0 0 0-1 0V2h-1V.5zm1 4.5h3A1.5 1.5 0 0 1 11 6.5v3A1.5 1.5 0 0 1 9.5 11h-3A1.5 1.5 0 0 1 5 9.5v-3A1.5 1.5 0 0 1 6.5 5z"/>
+            </svg>
+            Bridge
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "devices" ? "active" : "")" @onclick='() => _activeTab = "devices"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M12.166 8.94c-.524 1.062-1.234 2.12-1.96 3.07A31.493 31.493 0 0 1 8 14.58a31.481 31.481 0 0 1-2.206-2.57c-.726-.95-1.436-2.008-1.96-3.07C3.304 7.867 3 6.862 3 6a5 5 0 0 1 10 0c0 .862-.305 1.867-.834 2.94zM8 16s6-5.686 6-10A6 6 0 0 0 2 6c0 4.314 6 10 6 10z"/>
+                <path d="M8 8a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm0 1a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/>
+            </svg>
+            Devices
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "events" ? "active" : "")" @onclick='() => _activeTab = "events"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M8.515 1.019A7 7 0 0 0 8 1V0a8 8 0 0 1 .589.022l-.074.997zm2.004.45a7.003 7.003 0 0 0-.985-.299l.219-.976c.383.086.76.2 1.126.342l-.36.933zm1.37.71a7.01 7.01 0 0 0-.439-.27l.493-.87a8.025 8.025 0 0 1 .979.654l-.615.789a6.996 6.996 0 0 0-.418-.302zm1.834 1.79a6.99 6.99 0 0 0-.653-.796l.724-.69c.27.285.52.59.747.91l-.818.576zm.744 1.352a7.08 7.08 0 0 0-.214-.468l.893-.45a7.976 7.976 0 0 1 .45 1.088l-.95.313a7.023 7.023 0 0 0-.179-.483zm.53 2.507a6.991 6.991 0 0 0-.1-1.025l.985-.17c.067.386.106.778.116 1.17l-1 .025zm-.131 1.538c.033-.17.06-.339.081-.51l.993.123a7.957 7.957 0 0 1-.23 1.155l-.964-.267c.046-.165.086-.332.12-.501zm-.952 2.379c.184-.29.346-.594.486-.908l.914.405c-.16.36-.345.706-.555 1.038l-.845-.535zm-.964 1.205c.122-.122.239-.248.35-.378l.758.653a8.073 8.073 0 0 1-.401.432l-.707-.707z"/>
+                <path d="M8 1a7 7 0 1 0 4.95 11.95l.707.707A8.001 8.001 0 1 1 8 0v1z"/>
+                <path d="M7.5 3a.5.5 0 0 1 .5.5v5.21l3.248 1.856a.5.5 0 0 1-.496.868l-3.5-2A.5.5 0 0 1 7 9V3.5a.5.5 0 0 1 .5-.5z"/>
+            </svg>
+            Events
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "requests" ? "active" : "")" @onclick='() => _activeTab = "requests"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2zm15 2h-4v3h4V4zm0 4h-4v3h4V8zm0 4h-4v3h3a1 1 0 0 0 1-1v-2zm-5 3v-3H6v3h4zm-5 0v-3H1v2a1 1 0 0 0 1 1h3zm-4-4h4V8H1v3zm0-4h4V4H1v3zm5-3v3h4V4H6zm4 4H6v3h4V8z"/>
+            </svg>
+            Requests
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link @(_activeTab == "custom" ? "active" : "")" @onclick='() => _activeTab = "custom"'>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                <path d="M6 3a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM1 3a2 2 0 1 0 4 0 2 2 0 0 0-4 0z"/>
+                <path d="M9 6h.5a2 2 0 0 1 1.983 1.738l3.11-1.382A1 1 0 0 1 16 7.269v7.462a1 1 0 0 1-1.406.913l-3.111-1.382A2 2 0 0 1 9.5 16H2a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h7zm6 8.73V7.27l-3.5 1.555v4.35l3.5 1.556zM1 8v6a1 1 0 0 0 1 1h7.5a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1z"/>
+            </svg>
+            Custom Builder
+        </button>
+    </li>
+</ul>
+
+<div class="row g-4">
+    <!-- Left Panel: Controls -->
+    <div class="col-lg-7">
+        @if (_activeTab == "bridge")
+        {
+            <!-- Bridge Messages -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Bridge Messages</h5>
+                    <small class="text-muted">Simulate Zigbee2MQTT bridge state and info messages</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <!-- Bridge State -->
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">Bridge State</label>
+                            <div class="btn-group w-100" role="group">
+                                <button class="btn @(_bridgeOnline ? "btn-success" : "btn-outline-success")" @onclick="() => SendBridgeState(true)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                        <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zm-3.97-3.03a.75.75 0 0 0-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-.01-1.05z"/>
+                                    </svg>
+                                    Online
+                                </button>
+                                <button class="btn @(!_bridgeOnline ? "btn-danger" : "btn-outline-danger")" @onclick="() => SendBridgeState(false)">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                        <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM5.354 4.646a.5.5 0 1 0-.708.708L7.293 8l-2.647 2.646a.5.5 0 0 0 .708.708L8 8.707l2.646 2.647a.5.5 0 0 0 .708-.708L8.707 8l2.647-2.646a.5.5 0 0 0-.708-.708L8 7.293 5.354 4.646z"/>
+                                    </svg>
+                                    Offline
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Bridge Info -->
+                        <div class="col-md-6">
+                            <label class="form-label">Version</label>
+                            <input type="text" class="form-control" @bind="_bridgeVersion" placeholder="1.40.0" />
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Coordinator Type</label>
+                            <select class="form-select" @bind="_coordinatorType">
+                                <option value="zStack3x0">zStack3x0 (CC2652)</option>
+                                <option value="zStack30x">zStack30x (CC2538)</option>
+                                <option value="EZSP">EZSP (EFR32)</option>
+                                <option value="deconz">deCONZ (ConBee)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Channel</label>
+                            <select class="form-select" @bind="_networkChannel">
+                                @for (int i = 11; i <= 26; i++)
+                                {
+                                    <option value="@i">@i</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">PAN ID</label>
+                            <input type="number" class="form-control" @bind="_panId" />
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Permit Join</label>
+                            <select class="form-select" @bind="_permitJoin">
+                                <option value="false">Disabled</option>
+                                <option value="true">Enabled</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <button class="btn btn-primary w-100" @onclick="SendBridgeInfo" disabled="@(!MqttService.IsConnected)">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                    <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Z"/>
+                                </svg>
+                                Send Bridge Info
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Device Discovery -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0 fw-semibold">Device Discovery</h5>
+                        <small class="text-muted">Send bridge/devices message with all mock devices</small>
+                    </div>
+                    <button class="btn btn-success" @onclick="SendDeviceDiscovery" disabled="@(!MqttService.IsConnected)">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                            <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+                        </svg>
+                        Broadcast Discovery
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 250px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="sticky-top" style="background-color: var(--hermod-card-bg);">
+                                <tr>
+                                    <th>Friendly Name</th>
+                                    <th>Type</th>
+                                    <th>IEEE Address</th>
+                                    <th>Vendor</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var device in _mockDevices)
+                                {
+                                    <tr>
+                                        <td><strong>@device.FriendlyName</strong></td>
+                                        <td><span class="badge @GetDeviceTypeBadge(device.Type)">@device.Type</span></td>
+                                        <td><code class="small">@device.IeeeAddress</code></td>
+                                        <td>@device.Vendor</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+        else if (_activeTab == "devices")
+        {
+            <!-- Device State Messages -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Device State Simulator</h5>
+                    <small class="text-muted">Send device state updates to zigbee/[device]</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Select Device</label>
+                            <select class="form-select" @bind="_selectedDeviceIndex">
+                                @for (int i = 0; i < _mockDevices.Count; i++)
+                                {
+                                    <option value="@i">@_mockDevices[i].FriendlyName (@_mockDevices[i].DeviceType)</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Device Type</label>
+                            <input type="text" class="form-control" value="@SelectedDevice?.DeviceType" readonly />
+                        </div>
+                    </div>
+
+                    @if (SelectedDevice != null)
+                    {
+                        <div class="row g-3">
+                            @if (SelectedDevice.DeviceType == "light")
+                            {
+                                <div class="col-md-4">
+                                    <label class="form-label">State</label>
+                                    <select class="form-select" @bind="_lightState">
+                                        <option value="ON">ON</option>
+                                        <option value="OFF">OFF</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Brightness (0-254)</label>
+                                    <input type="number" class="form-control" @bind="_lightBrightness" min="0" max="254" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Color Temp</label>
+                                    <input type="number" class="form-control" @bind="_lightColorTemp" min="150" max="500" />
+                                </div>
+                            }
+                            else if (SelectedDevice.DeviceType == "sensor")
+                            {
+                                <div class="col-md-3">
+                                    <label class="form-label">Temperature °C</label>
+                                    <input type="number" class="form-control" @bind="_sensorTemp" step="0.1" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Humidity %</label>
+                                    <input type="number" class="form-control" @bind="_sensorHumidity" step="0.1" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Battery %</label>
+                                    <input type="number" class="form-control" @bind="_sensorBattery" min="0" max="100" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Link Quality</label>
+                                    <input type="number" class="form-control" @bind="_linkQuality" min="0" max="255" />
+                                </div>
+                            }
+                            else if (SelectedDevice.DeviceType == "motion")
+                            {
+                                <div class="col-md-3">
+                                    <label class="form-label">Occupancy</label>
+                                    <select class="form-select" @bind="_motionOccupancy">
+                                        <option value="true">Detected</option>
+                                        <option value="false">Clear</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Illuminance (lux)</label>
+                                    <input type="number" class="form-control" @bind="_motionIlluminance" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Battery %</label>
+                                    <input type="number" class="form-control" @bind="_sensorBattery" min="0" max="100" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Link Quality</label>
+                                    <input type="number" class="form-control" @bind="_linkQuality" min="0" max="255" />
+                                </div>
+                            }
+                            else if (SelectedDevice.DeviceType == "contact")
+                            {
+                                <div class="col-md-4">
+                                    <label class="form-label">Contact State</label>
+                                    <select class="form-select" @bind="_contactState">
+                                        <option value="true">Closed</option>
+                                        <option value="false">Open</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Battery %</label>
+                                    <input type="number" class="form-control" @bind="_sensorBattery" min="0" max="100" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">Link Quality</label>
+                                    <input type="number" class="form-control" @bind="_linkQuality" min="0" max="255" />
+                                </div>
+                            }
+                            else if (SelectedDevice.DeviceType == "switch" || SelectedDevice.DeviceType == "plug")
+                            {
+                                <div class="col-md-3">
+                                    <label class="form-label">State</label>
+                                    <select class="form-select" @bind="_switchState">
+                                        <option value="ON">ON</option>
+                                        <option value="OFF">OFF</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Power (W)</label>
+                                    <input type="number" class="form-control" @bind="_plugPower" step="0.1" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Voltage (V)</label>
+                                    <input type="number" class="form-control" @bind="_plugVoltage" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Link Quality</label>
+                                    <input type="number" class="form-control" @bind="_linkQuality" min="0" max="255" />
+                                </div>
+                            }
+                        </div>
+                        <div class="mt-3 d-flex gap-2">
+                            <button class="btn btn-primary flex-grow-1" @onclick="SendDeviceState" disabled="@(!MqttService.IsConnected)">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                    <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Z"/>
+                                </svg>
+                                Send State
+                            </button>
+                            <button class="btn btn-outline-success" @onclick="() => SendDeviceAvailability(true)" disabled="@(!MqttService.IsConnected)">
+                                Online
+                            </button>
+                            <button class="btn btn-outline-danger" @onclick="() => SendDeviceAvailability(false)" disabled="@(!MqttService.IsConnected)">
+                                Offline
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Quick Device Actions -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0 fw-semibold">Quick Actions</h5>
+                        <small class="text-muted">Send predefined device states</small>
+                    </div>
+                    <button class="btn btn-sm btn-success" @onclick="SendAllDeviceStates" disabled="@(!MqttService.IsConnected)">
+                        Broadcast All States
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive" style="max-height: 300px;">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="sticky-top" style="background-color: var(--hermod-card-bg);">
+                                <tr>
+                                    <th>Device</th>
+                                    <th>Type</th>
+                                    <th>Topic</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var device in _mockDevices)
+                                {
+                                    <tr>
+                                        <td><strong>@device.FriendlyName</strong></td>
+                                        <td><span class="badge bg-info">@device.DeviceType</span></td>
+                                        <td><code class="small">zigbee/@device.FriendlyName</code></td>
+                                        <td>
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => SendQuickDeviceState(device)" disabled="@(!MqttService.IsConnected)">
+                                                Send
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        }
+        else if (_activeTab == "events")
+        {
+            <!-- Bridge Events -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Bridge Events</h5>
+                    <small class="text-muted">Simulate device lifecycle events (zigbee/bridge/event)</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Device for Event</label>
+                            <select class="form-select" @bind="_eventDeviceIndex">
+                                @for (int i = 0; i < _mockDevices.Count; i++)
+                                {
+                                    <option value="@i">@_mockDevices[i].FriendlyName</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">IEEE Address</label>
+                            <input type="text" class="form-control font-monospace" value="@EventDevice?.IeeeAddress" readonly />
+                        </div>
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-success" @onclick='() => SendBridgeEvent("device_joined")' disabled="@(!MqttService.IsConnected)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+                            </svg>
+                            Device Joined
+                        </button>
+                        <button class="btn btn-info text-white" @onclick='() => SendBridgeEvent("device_announce")' disabled="@(!MqttService.IsConnected)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M13 2.5a1.5 1.5 0 0 1 3 0v11a1.5 1.5 0 0 1-3 0v-11zm-1 .724c-2.067.95-4.539 1.481-7 1.656v6.237a25.222 25.222 0 0 1 1.088.085c2.053.204 4.038.668 5.912 1.56V3.224zm-8 7.841V4.934c-.68.027-1.399.043-2.008.053A2.02 2.02 0 0 0 0 7v2c0 1.106.896 1.996 1.994 2.009a68.14 68.14 0 0 1 .496.008 64 64 0 0 1 1.51.048zm1.39 1.081c.285.021.569.047.85.078l.253 1.69a1 1 0 0 1-.983 1.187h-.548a1 1 0 0 1-.916-.599l-1.314-2.48a65.81 65.81 0 0 1 1.692.064c.327.017.65.037.966.06z"/>
+                            </svg>
+                            Device Announce
+                        </button>
+                        <button class="btn btn-warning text-dark" @onclick='() => SendBridgeEvent("device_interview_started")' disabled="@(!MqttService.IsConnected)">
+                            Interview Started
+                        </button>
+                        <button class="btn btn-primary" @onclick='() => SendBridgeEvent("device_interview_successful")' disabled="@(!MqttService.IsConnected)">
+                            Interview Success
+                        </button>
+                        <button class="btn btn-secondary" @onclick='() => SendBridgeEvent("device_interview_failed")' disabled="@(!MqttService.IsConnected)">
+                            Interview Failed
+                        </button>
+                        <button class="btn btn-danger" @onclick='() => SendBridgeEvent("device_leave")' disabled="@(!MqttService.IsConnected)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                                <path d="M4 8a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7A.5.5 0 0 1 4 8z"/>
+                            </svg>
+                            Device Leave
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logging Messages -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Logging Messages</h5>
+                    <small class="text-muted">Simulate bridge log messages (zigbee/bridge/logging)</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Log Level</label>
+                            <select class="form-select" @bind="_logLevel">
+                                <option value="debug">Debug</option>
+                                <option value="info">Info</option>
+                                <option value="warning">Warning</option>
+                                <option value="error">Error</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label">Message</label>
+                            <input type="text" class="form-control" @bind="_logMessage" placeholder="Enter log message..." />
+                        </div>
+                    </div>
+                    <button class="btn btn-primary w-100" @onclick="SendLogMessage" disabled="@(!MqttService.IsConnected)">
+                        Send Log Message
+                    </button>
+                </div>
+            </div>
+        }
+        else if (_activeTab == "requests")
+        {
+            <!-- Request/Response Simulator -->
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Request Actions</h5>
+                    <small class="text-muted">Send zigbee/bridge/request/* messages</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Permit Join Control</label>
+                            <div class="btn-group w-100" role="group">
+                                <button class="btn btn-outline-success" @onclick="() => SendPermitJoin(true)" disabled="@(!MqttService.IsConnected)">
+                                    Enable (254s)
+                                </button>
+                                <button class="btn btn-outline-danger" @onclick="() => SendPermitJoin(false)" disabled="@(!MqttService.IsConnected)">
+                                    Disable
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">Health Check</label>
+                            <button class="btn btn-outline-primary w-100" @onclick="SendHealthCheck" disabled="@(!MqttService.IsConnected)">
+                                Request Health Check
+                            </button>
+                        </div>
+                    </div>
+
+                    <hr class="my-4" />
+
+                    <h6 class="fw-semibold mb-3">Device Actions</h6>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Target Device</label>
+                            <select class="form-select" @bind="_requestDeviceIndex">
+                                @for (int i = 0; i < _mockDevices.Count; i++)
+                                {
+                                    <option value="@i">@_mockDevices[i].FriendlyName</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">New Name (for rename)</label>
+                            <input type="text" class="form-control" @bind="_newDeviceName" placeholder="new_device_name" />
+                        </div>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-outline-info" @onclick="SendDeviceConfigure" disabled="@(!MqttService.IsConnected)">
+                            Configure
+                        </button>
+                        <button class="btn btn-outline-primary" @onclick="SendDeviceInterview" disabled="@(!MqttService.IsConnected)">
+                            Interview
+                        </button>
+                        <button class="btn btn-outline-warning text-dark" @onclick="SendDeviceRename" disabled="@(!MqttService.IsConnected || string.IsNullOrEmpty(_newDeviceName))">
+                            Rename
+                        </button>
+                        <button class="btn btn-outline-danger" @onclick="SendDeviceRemove" disabled="@(!MqttService.IsConnected)">
+                            Remove
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Response Simulator -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Response Simulator</h5>
+                    <small class="text-muted">Send mock responses (zigbee/bridge/response/*)</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Response Type</label>
+                            <select class="form-select" @bind="_responseType">
+                                <option value="permit_join">permit_join</option>
+                                <option value="health_check">health_check</option>
+                                <option value="device/configure">device/configure</option>
+                                <option value="device/rename">device/rename</option>
+                                <option value="device/remove">device/remove</option>
+                                <option value="networkmap">networkmap</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Status</label>
+                            <select class="form-select" @bind="_responseStatus">
+                                <option value="ok">OK</option>
+                                <option value="error">Error</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary w-100" @onclick="SendMockResponse" disabled="@(!MqttService.IsConnected)">
+                        Send Response
+                    </button>
+                </div>
+            </div>
+        }
+        else if (_activeTab == "custom")
+        {
+            <!-- Custom Message Builder -->
+            <div class="card border-0 shadow-sm">
+                <div class="card-header bg-transparent border-0">
+                    <h5 class="mb-0 fw-semibold">Custom Message Builder</h5>
+                    <small class="text-muted">Build and send any ZigBee2MQTT message</small>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Topic Template</label>
+                            <select class="form-select" @onchange="OnTopicTemplateChange">
+                                <option value="">-- Select Template --</option>
+                                <option value="zigbee/bridge/state">Bridge State</option>
+                                <option value="zigbee/bridge/info">Bridge Info</option>
+                                <option value="zigbee/bridge/devices">Bridge Devices</option>
+                                <option value="zigbee/bridge/groups">Bridge Groups</option>
+                                <option value="zigbee/bridge/event">Bridge Event</option>
+                                <option value="zigbee/bridge/logging">Bridge Logging</option>
+                                <option value="zigbee/[device]">Device State</option>
+                                <option value="zigbee/[device]/availability">Device Availability</option>
+                                <option value="zigbee/[device]/set">Device Set</option>
+                                <option value="zigbee/[device]/get">Device Get</option>
+                                <option value="zigbee/bridge/request/permit_join">Request: Permit Join</option>
+                                <option value="zigbee/bridge/request/device/rename">Request: Device Rename</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label">Topic</label>
+                            <input type="text" class="form-control font-monospace" @bind="_customTopic" placeholder="zigbee/..." />
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Payload (JSON)</label>
+                        <textarea class="form-control font-monospace" rows="8" @bind="_customPayload" placeholder='{"key": "value"}'></textarea>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-primary flex-grow-1" @onclick="SendCustomMessage" disabled="@(!MqttService.IsConnected || string.IsNullOrEmpty(_customTopic))">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Z"/>
+                            </svg>
+                            Send Message
+                        </button>
+                        <button class="btn btn-outline-secondary" @onclick="FormatPayload">
+                            Format JSON
+                        </button>
+                        <button class="btn btn-outline-danger" @onclick="ClearCustom">
+                            Clear
+                        </button>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- Right Panel: Message Log -->
+    <div class="col-lg-5">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-transparent border-0 d-flex justify-content-between align-items-center">
+                <h5 class="mb-0 fw-semibold">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="currentColor" class="me-2 text-info" viewBox="0 0 16 16">
+                        <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                        <path d="M3 5.5a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9a.5.5 0 0 1-.5-.5zM3 8a.5.5 0 0 1 .5-.5h9a.5.5 0 0 1 0 1h-9A.5.5 0 0 1 3 8zm0 2.5a.5.5 0 0 1 .5-.5h6a.5.5 0 0 1 0 1h-6a.5.5 0 0 1-.5-.5z"/>
+                    </svg>
+                    MQTT Log
+                </h5>
+                <div class="d-flex gap-2">
+                    <select class="form-select form-select-sm" style="width: auto;" @bind="_logFilter">
+                        <option value="">All Messages</option>
+                        <option value="bridge">Bridge Only</option>
+                        <option value="device">Devices Only</option>
+                        <option value="request">Requests</option>
+                        <option value="response">Responses</option>
+                    </select>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="ClearMessages">Clear</button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div style="height: 600px; overflow-y: auto;">
+                    @if (FilteredMessages.Any())
+                    {
+                        @foreach (var msg in FilteredMessages.OrderByDescending(m => m.ReceivedAt).Take(100))
+                        {
+                            <div class="border-bottom p-3">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <code class="@GetTopicColor(msg.Topic) small">@msg.Topic</code>
+                                    <small class="text-muted">@msg.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff")</small>
+                                </div>
+                                <pre class="bg-light rounded p-2 mb-0 small" style="max-height: 150px; overflow: auto; white-space: pre-wrap;">@FormatJson(msg.Payload)</pre>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="text-center text-muted py-5">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="currentColor" class="mb-3 opacity-50" viewBox="0 0 16 16">
+                                <path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/>
+                                <path d="M10.97 4.97a.75.75 0 0 1 1.071 1.05l-3.992 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.235.235 0 0 1 .02-.022z"/>
+                            </svg>
+                            <p class="mb-1">No messages yet</p>
+                            <small>MQTT messages will appear here</small>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private readonly CancellationTokenSource _pageCts = new();
+    private string _activeTab = "bridge";
+    private int _messagesSent;
+    private bool _bridgeOnline = true;
+    private readonly List<MqttMessage> _receivedMessages = new();
+    private string _logFilter = "";
+    private string? _errorMessage;
+
+    // Bridge settings
+    private string _bridgeVersion = "1.40.2";
+    private string _coordinatorType = "zStack3x0";
+    private int _networkChannel = 11;
+    private int _panId = 6754;
+    private string _permitJoin = "false";
+
+    // Device state settings
+    private int _selectedDeviceIndex = 0;
+    private string _lightState = "ON";
+    private int _lightBrightness = 200;
+    private int _lightColorTemp = 370;
+    private double _sensorTemp = 22.5;
+    private double _sensorHumidity = 45.0;
+    private int _sensorBattery = 85;
+    private int _linkQuality = 120;
+    private string _motionOccupancy = "false";
+    private int _motionIlluminance = 150;
+    private string _contactState = "true";
+    private string _switchState = "ON";
+    private double _plugPower = 45.2;
+    private int _plugVoltage = 230;
+
+    // Event settings
+    private int _eventDeviceIndex = 0;
+    private string _logLevel = "info";
+    private string _logMessage = "";
+
+    // Request settings
+    private int _requestDeviceIndex = 0;
+    private string _newDeviceName = "";
+    private string _responseType = "permit_join";
+    private string _responseStatus = "ok";
+
+    // Custom message
+    private string _customTopic = "";
+    private string _customPayload = "";
+
+    // Mock devices
+    private readonly List<MockZigbeeDevice> _mockDevices = new();
+
+    private MockZigbeeDevice? SelectedDevice => _selectedDeviceIndex >= 0 && _selectedDeviceIndex < _mockDevices.Count
+        ? _mockDevices[_selectedDeviceIndex] : null;
+
+    private MockZigbeeDevice? EventDevice => _eventDeviceIndex >= 0 && _eventDeviceIndex < _mockDevices.Count
+        ? _mockDevices[_eventDeviceIndex] : null;
+
+    private MockZigbeeDevice? RequestDevice => _requestDeviceIndex >= 0 && _requestDeviceIndex < _mockDevices.Count
+        ? _mockDevices[_requestDeviceIndex] : null;
+
+    private IEnumerable<MqttMessage> FilteredMessages
+    {
+        get
+        {
+            // Snapshot under the writer lock so the render-time LINQ filter
+            // never enumerates concurrently with HandleMessage appending.
+            MqttMessage[] snapshot;
+            lock (_receivedMessages)
+            {
+                snapshot = _receivedMessages.ToArray();
+            }
+
+            return _logFilter switch
+            {
+                "bridge" => snapshot.Where(m => m.Topic.Contains("/bridge/") && !m.Topic.Contains("/request/") && !m.Topic.Contains("/response/")),
+                "device" => snapshot.Where(m => m.Topic.StartsWith("zigbee/") && !m.Topic.Contains("/bridge/")),
+                "request" => snapshot.Where(m => m.Topic.Contains("/request/")),
+                "response" => snapshot.Where(m => m.Topic.Contains("/response/")),
+                _ => snapshot
+            };
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        InitializeMockDevices();
+        MqttService.MessageReceived += HandleMessage;
+    }
+
+    private void InitializeMockDevices()
+    {
+        _mockDevices.AddRange(new[]
+        {
+            // Lights
+            new MockZigbeeDevice("living_room_light", "0x00124b0025a1b2c3", "Router", "light", "IKEA", "TRADFRI bulb E27 WS opal 980lm", "LED1545G12", "Mains (single phase)"),
+            new MockZigbeeDevice("kitchen_light", "0x00124b0025a1b2c4", "Router", "light", "Philips", "Hue white ambiance E27", "LWA001", "Mains (single phase)"),
+            new MockZigbeeDevice("bedroom_light", "0x00124b0025a1b2c5", "Router", "light", "IKEA", "TRADFRI LED bulb E26/E27 806 lumen", "LED1836G9", "Mains (single phase)"),
+
+            // Sensors
+            new MockZigbeeDevice("temp_sensor_bedroom", "0x00158d0004512b34", "EndDevice", "sensor", "Xiaomi", "Aqara temperature, humidity and pressure sensor", "WSDCGQ11LM", "Battery"),
+            new MockZigbeeDevice("temp_sensor_living", "0x00158d0004512b35", "EndDevice", "sensor", "Xiaomi", "Aqara temperature, humidity and pressure sensor", "WSDCGQ11LM", "Battery"),
+            new MockZigbeeDevice("temp_sensor_server_room", "0x00158d0004512b36", "EndDevice", "sensor", "Sonoff", "SNZB-02 temperature and humidity sensor", "SNZB-02", "Battery"),
+
+            // Motion sensors
+            new MockZigbeeDevice("motion_sensor_hall", "0x00158d0004238a12", "EndDevice", "motion", "Xiaomi", "Aqara human body movement and illuminance sensor", "RTCGQ11LM", "Battery"),
+            new MockZigbeeDevice("motion_sensor_garage", "0x00158d0004238a13", "EndDevice", "motion", "Philips", "Hue motion sensor", "SML001", "Battery"),
+
+            // Contact sensors
+            new MockZigbeeDevice("door_contact_front", "0x00158d0004238b01", "EndDevice", "contact", "Xiaomi", "Aqara door & window contact sensor", "MCCGQ11LM", "Battery"),
+            new MockZigbeeDevice("door_contact_back", "0x00158d0004238b02", "EndDevice", "contact", "Sonoff", "SNZB-04 contact sensor", "SNZB-04", "Battery"),
+            new MockZigbeeDevice("window_contact_bedroom", "0x00158d0004238b03", "EndDevice", "contact", "Xiaomi", "Aqara door & window contact sensor", "MCCGQ11LM", "Battery"),
+
+            // Plugs/Switches
+            new MockZigbeeDevice("smart_plug_office", "0x00158d0004567890", "Router", "plug", "Xiaomi", "Mi power plug ZigBee", "ZNCZ02LM", "Mains (single phase)"),
+            new MockZigbeeDevice("smart_plug_kitchen", "0x00158d0004567891", "Router", "plug", "BlitzWolf", "BW-SHP13 Zigbee 3.0 smart plug", "TS0121_plug", "Mains (single phase)"),
+            new MockZigbeeDevice("wall_switch_garage", "0x00158d0004567892", "Router", "switch", "Sonoff", "ZBMINI Zigbee smart switch", "ZBMINI", "Mains (single phase)")
+        });
+    }
+
+    private void HandleMessage(object? sender, MqttMessage message)
+    {
+        if (message.Topic.StartsWith("zigbee/"))
+        {
+            lock (_receivedMessages)
+            {
+                _receivedMessages.Add(message);
+                if (_receivedMessages.Count > 500)
+                    _receivedMessages.RemoveAt(0);
+            }
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    // Bridge messages
+    private async Task SendBridgeState(bool online)
+    {
+        _bridgeOnline = online;
+        var payload = JsonSerializer.Serialize(new { state = online ? "online" : "offline" });
+        await SafePublishAsync("zigbee/bridge/state", payload);
+    }
+
+    private async Task SendBridgeInfo()
+    {
+        var info = new
+        {
+            version = _bridgeVersion,
+            commit = "unknown",
+            coordinator = new
+            {
+                type = _coordinatorType,
+                ieee_address = "0x00124b001cd4d319",
+                meta = new { revision = 20240315, transportrev = 2, product = 1, majorrel = 2, minorrel = 7, maintrel = 1 }
+            },
+            network = new { channel = _networkChannel, pan_id = _panId, extended_pan_id = new[] { 0xdd, 0xdd, 0xdd, 0x01, 0x02, 0x03, 0x04, 0x05 } },
+            log_level = "info",
+            permit_join = bool.Parse(_permitJoin),
+            permit_join_end = (object?)null,
+            restart_required = false,
+            config = new { homeassistant = true, permit_join = bool.Parse(_permitJoin) },
+            config_schema = new { },
+            zigbee_herdsman_converters = new { version = "15.125.0" },
+            zigbee_herdsman = new { version = "0.57.5" }
+        };
+        await SafePublishAsync("zigbee/bridge/info", JsonSerializer.Serialize(info, new JsonSerializerOptions { WriteIndented = false }));
+    }
+
+    private async Task SendDeviceDiscovery()
+    {
+        var devices = _mockDevices.Select(d => new
+        {
+            ieee_address = d.IeeeAddress,
+            type = d.Type,
+            network_address = Random.Shared.Next(1000, 65000),
+            supported = true,
+            disabled = false,
+            friendly_name = d.FriendlyName,
+            endpoints = new Dictionary<string, object>
+            {
+                ["1"] = new { bindings = Array.Empty<object>(), configured_reportings = Array.Empty<object>(), clusters = new { input = new[] { "genOnOff", "genBasic" }, output = Array.Empty<string>() } }
+            },
+            definition = new { model = d.ModelId, vendor = d.Vendor, description = d.Description, exposes = Array.Empty<object>(), options = Array.Empty<object>() },
+            power_source = d.PowerSource,
+            model_id = d.ModelId,
+            interview_completed = true,
+            interviewing = false
+        }).ToList();
+
+        await SafePublishAsync("zigbee/bridge/devices", JsonSerializer.Serialize(devices));
+    }
+
+    // Device state messages
+    private async Task SendDeviceState()
+    {
+        if (SelectedDevice == null) return;
+
+        var payload = SelectedDevice.DeviceType switch
+        {
+            "light" => JsonSerializer.Serialize(new { state = _lightState, brightness = _lightBrightness, color_temp = _lightColorTemp, linkquality = _linkQuality }),
+            "sensor" => JsonSerializer.Serialize(new { temperature = _sensorTemp, humidity = _sensorHumidity, battery = _sensorBattery, linkquality = _linkQuality, voltage = _sensorBattery * 30 + 100 }),
+            "motion" => JsonSerializer.Serialize(new { occupancy = bool.Parse(_motionOccupancy), illuminance = _motionIlluminance, illuminance_lux = _motionIlluminance, battery = _sensorBattery, linkquality = _linkQuality }),
+            "contact" => JsonSerializer.Serialize(new { contact = bool.Parse(_contactState), battery = _sensorBattery, linkquality = _linkQuality, voltage = _sensorBattery * 30 + 100 }),
+            "plug" or "switch" => JsonSerializer.Serialize(new { state = _switchState, power = _plugPower, voltage = _plugVoltage, current = Math.Round(_plugPower / _plugVoltage, 2), linkquality = _linkQuality }),
+            _ => "{}"
+        };
+
+        await SafePublishAsync($"zigbee/{SelectedDevice.FriendlyName}", payload);
+    }
+
+    private async Task SendDeviceAvailability(bool online)
+    {
+        if (SelectedDevice == null) return;
+        var payload = JsonSerializer.Serialize(new { state = online ? "online" : "offline" });
+        await SafePublishAsync($"zigbee/{SelectedDevice.FriendlyName}/availability", payload);
+    }
+
+    private async Task SendQuickDeviceState(MockZigbeeDevice device)
+    {
+        var payload = device.DeviceType switch
+        {
+            "light" => """{"state":"ON","brightness":200,"color_temp":370,"linkquality":120}""",
+            "sensor" => """{"temperature":22.5,"humidity":45,"battery":85,"linkquality":105,"voltage":2950}""",
+            "motion" => """{"occupancy":true,"illuminance":150,"illuminance_lux":150,"battery":90,"linkquality":110}""",
+            "contact" => """{"contact":true,"battery":78,"linkquality":95,"voltage":2800}""",
+            "plug" or "switch" => """{"state":"ON","power":45.2,"voltage":230,"current":0.2,"linkquality":115}""",
+            _ => "{}"
+        };
+        await SafePublishAsync($"zigbee/{device.FriendlyName}", payload);
+    }
+
+    private async Task SendAllDeviceStates()
+    {
+        foreach (var device in _mockDevices)
+        {
+            await SendQuickDeviceState(device);
+            await Task.Delay(50);
+        }
+    }
+
+    // Event messages
+    private async Task SendBridgeEvent(string eventType)
+    {
+        if (EventDevice == null) return;
+
+        object eventData = eventType switch
+        {
+            "device_joined" => new { type = "device_joined", data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress } },
+            "device_announce" => new { type = "device_announce", data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress } },
+            "device_interview_started" => new { type = "device_interview", data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress, status = "started" } },
+            "device_interview_successful" => new { type = "device_interview", data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress, status = "successful", supported = true, definition = new { model = EventDevice.ModelId, vendor = EventDevice.Vendor, description = EventDevice.Description } } },
+            "device_interview_failed" => new { type = "device_interview", data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress, status = "failed" } },
+            "device_leave" => new { type = "device_leave", data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress } },
+            _ => new { type = eventType, data = new { friendly_name = EventDevice.FriendlyName, ieee_address = EventDevice.IeeeAddress } }
+        };
+
+        await SafePublishAsync("zigbee/bridge/event", JsonSerializer.Serialize(eventData));
+    }
+
+    private async Task SendLogMessage()
+    {
+        var msg = string.IsNullOrEmpty(_logMessage) ? "Test log message from Hermod Mock" : _logMessage;
+        var payload = JsonSerializer.Serialize(new { level = _logLevel, message = msg, @namespace = "z2m" });
+        await SafePublishAsync("zigbee/bridge/logging", payload);
+    }
+
+    // Request messages
+    private async Task SendPermitJoin(bool enable)
+    {
+        var payload = JsonSerializer.Serialize(new { time = enable ? 254 : 0 });
+        await SafePublishAsync("zigbee/bridge/request/permit_join", payload);
+    }
+
+    private Task SendHealthCheck() =>
+        SafePublishAsync("zigbee/bridge/request/health_check", "{}");
+
+    private Task SendDeviceConfigure() =>
+        SendDeviceIdRequestAsync("configure");
+
+    private Task SendDeviceInterview() =>
+        SendDeviceIdRequestAsync("interview");
+
+    private async Task SendDeviceIdRequestAsync(string action)
+    {
+        if (RequestDevice is null) return;
+        var payload = JsonSerializer.Serialize(new { id = RequestDevice.FriendlyName });
+        await SafePublishAsync($"zigbee/bridge/request/device/{action}", payload);
+    }
+
+    private async Task SendDeviceRename()
+    {
+        if (RequestDevice is null || string.IsNullOrEmpty(_newDeviceName)) return;
+        var payload = JsonSerializer.Serialize(new { from = RequestDevice.FriendlyName, to = _newDeviceName });
+        await SafePublishAsync("zigbee/bridge/request/device/rename", payload);
+    }
+
+    private Task SendDeviceRemove() => SendDeviceIdRequestAsync("remove");
+
+    private async Task SendMockResponse()
+    {
+        object responseData = (_responseType, _responseStatus) switch
+        {
+            ("permit_join", "ok") => new { data = new { time = 254 }, status = "ok" },
+            ("health_check", "ok") => new { data = new { healthy = true }, status = "ok" },
+            ("device/configure", "ok") => new { data = new { id = RequestDevice?.FriendlyName ?? "device" }, status = "ok" },
+            ("device/rename", "ok") => new { data = new { from = RequestDevice?.FriendlyName ?? "device", to = _newDeviceName, homeassistant_rename = false }, status = "ok" },
+            ("device/remove", "ok") => new { data = new { id = RequestDevice?.FriendlyName ?? "device", block = false, force = false }, status = "ok" },
+            ("networkmap", "ok") => new { data = new { type = "graphviz", value = "digraph G { }", routes = false }, status = "ok" },
+            (_, "error") => new { data = new { }, error = "Mock error message", status = "error" },
+            _ => new { data = new { }, status = "ok" }
+        };
+
+        await SafePublishAsync($"zigbee/bridge/response/{_responseType}", JsonSerializer.Serialize(responseData));
+    }
+
+    private async Task SendCustomMessage()
+    {
+        if (string.IsNullOrEmpty(_customTopic)) return;
+        var payload = string.IsNullOrEmpty(_customPayload) ? "{}" : _customPayload;
+        await SafePublishAsync(_customTopic, payload);
+    }
+
+    private void OnTopicTemplateChange(ChangeEventArgs e)
+    {
+        var template = e.Value?.ToString() ?? "";
+        if (string.IsNullOrEmpty(template)) return;
+
+        _customTopic = template.Replace("[device]", _mockDevices.FirstOrDefault()?.FriendlyName ?? "device_name");
+
+        _customPayload = template switch
+        {
+            "zigbee/bridge/state" => """{"state": "online"}""",
+            "zigbee/bridge/info" => """{"version": "1.40.2", "coordinator": {"type": "zStack3x0"}, "network": {"channel": 11, "pan_id": 6754}}""",
+            "zigbee/bridge/devices" => """[{"ieee_address": "0x00124b0025a1b2c3", "type": "Router", "friendly_name": "living_room_light", "supported": true}]""",
+            "zigbee/bridge/groups" => """[{"id": 1, "friendly_name": "living_room_group", "members": []}]""",
+            "zigbee/bridge/event" => """{"type": "device_joined", "data": {"friendly_name": "new_device", "ieee_address": "0x00158d0004512b99"}}""",
+            "zigbee/bridge/logging" => """{"level": "info", "message": "Test message", "namespace": "z2m"}""",
+            var t when t.EndsWith("/availability") => """{"state": "online"}""",
+            var t when t.EndsWith("/set") => """{"state": "ON", "brightness": 200}""",
+            var t when t.EndsWith("/get") => """{"state": ""}""",
+            "zigbee/bridge/request/permit_join" => """{"time": 254}""",
+            "zigbee/bridge/request/device/rename" => """{"from": "old_name", "to": "new_name"}""",
+            _ when template.Contains("[device]") => """{"state": "ON", "brightness": 200, "linkquality": 120}""",
+            _ => "{}"
+        };
+    }
+
+    private void FormatPayload()
+    {
+        try
+        {
+            var obj = JsonSerializer.Deserialize<object>(_customPayload);
+            _customPayload = JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch { }
+    }
+
+    private void ClearCustom()
+    {
+        _customTopic = "";
+        _customPayload = "";
+    }
+
+    private void ClearMessages()
+    {
+        lock (_receivedMessages) { _receivedMessages.Clear(); }
+    }
+
+    // Helpers
+    private static string GetDeviceTypeBadge(string type) => type switch
+    {
+        "Coordinator" => "bg-danger",
+        "Router" => "bg-success",
+        "EndDevice" => "bg-info",
+        _ => "bg-secondary"
+    };
+
+    private static string GetTopicColor(string topic) => topic switch
+    {
+        var t when t.Contains("/bridge/state") => "text-success",
+        var t when t.Contains("/bridge/info") => "text-info",
+        var t when t.Contains("/bridge/event") => "text-warning",
+        var t when t.Contains("/bridge/logging") => "text-muted",
+        var t when t.Contains("/request/") => "text-primary",
+        var t when t.Contains("/response/") => "text-success",
+        var t when t.Contains("/availability") => "text-warning",
+        var t when t.Contains("/set") => "text-danger",
+        _ => "text-primary"
+    };
+
+    private static string FormatJson(string payload)
+    {
+        try
+        {
+            var obj = JsonSerializer.Deserialize<object>(payload);
+            return JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch { return payload; }
+    }
+
+    private async Task SafePublishAsync(string topic, string payload)
+    {
+        try
+        {
+            var mqtt = MqttService;
+            await mqtt.PublishAsync(topic, payload, cancellationToken: _pageCts.Token);
+            _messagesSent++;
+            _errorMessage = null;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to publish Zigbee2MQTT mock message to {Topic}", topic);
+            _errorMessage = $"Failed to publish to {topic}. See coordinator logs.";
+        }
+    }
+
+    public void Dispose()
+    {
+        MqttService.MessageReceived -= HandleMessage;
+        _pageCts.Cancel();
+        _pageCts.Dispose();
+    }
+
+    private record MockZigbeeDevice(string FriendlyName, string IeeeAddress, string Type, string DeviceType, string Vendor, string Description, string ModelId, string PowerSource);
+}

@@ -1,0 +1,65 @@
+---
+# USB device passthrough configuration for Hermod dongles.
+# Deploys udev rules, reloads udev, and performs a soft check on device presence.
+# Idempotent: the copy task is a no-op if the file has not changed.
+
+- name: usb_passthrough | Add {{ hermod_user }} to dialout group (for tty access)
+  ansible.builtin.user:
+    name: "{{ hermod_user }}"
+    groups: dialout
+    append: true
+  tags: [usb, groups]
+
+- name: usb_passthrough | Deploy udev rules file
+  ansible.builtin.copy:
+    src: 99-hermod-usb.rules
+    dest: /etc/udev/rules.d/99-hermod-usb.rules
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload udev
+  tags: [usb, udev]
+
+- name: usb_passthrough | Flush handlers to reload udev immediately
+  ansible.builtin.meta: flush_handlers
+  tags: [usb, udev]
+
+- name: usb_passthrough | Trigger udev to apply rules to already-attached devices
+  ansible.builtin.command:
+    cmd: udevadm trigger --subsystem-match=tty
+  changed_when: false
+  tags: [usb, udev]
+
+# ---------------------------------------------------------------------------
+# Soft checks - warn but do not fail if dongles are not plugged in.
+# During CI / syntax checks the devices will not be present.
+# ---------------------------------------------------------------------------
+
+- name: usb_passthrough | Check for ZigBee dongle symlink /dev/zigbee_dongle
+  ansible.builtin.stat:
+    path: /dev/zigbee_dongle
+  register: _zigbee_dev
+  tags: [usb, check]
+
+- name: usb_passthrough | Warn if ZigBee dongle is not detected
+  ansible.builtin.debug:
+    msg: >
+      WARNING: /dev/zigbee_dongle not found. Ensure the Sonoff ZBDongle-P
+      (10c4:ea60) is connected and the udev rule has been applied.
+  when: not _zigbee_dev.stat.exists
+  tags: [usb, check]
+
+- name: usb_passthrough | Check for LoRa dongle symlink /dev/lora_dongle
+  ansible.builtin.stat:
+    path: /dev/lora_dongle
+  register: _lora_dev
+  tags: [usb, check]
+
+- name: usb_passthrough | Warn if LoRa dongle is not detected
+  ansible.builtin.debug:
+    msg: >
+      WARNING: /dev/lora_dongle not found. Ensure the Waveshare USB-TO-LoRa-HF
+      (SX1262) is connected and the udev rule has been applied. See the TODO
+      in 99-hermod-usb.rules if the vendor:product IDs need adjusting.
+  when: not _lora_dev.stat.exists
+  tags: [usb, check]

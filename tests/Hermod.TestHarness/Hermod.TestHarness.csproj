@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- LoRa2MQTT.Service ProjectReference also uses top-level statements; both
+         end up generating a global ::Program class. The compiler picks ours. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.17.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.17.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LoRa2MQTT\LoRa2MQTT.Service\LoRa2MQTT.Service.csproj" />
+    <!-- PerformanceTestRunner constructs Rule / RuleAction / RuleTrigger
+         directly to seed and tear down its own forwarding rule via the
+         REST API, so the harness needs Hermod.Core's model types. -->
+    <ProjectReference Include="..\..\src\Hermod.Core\Hermod.Core.csproj" />
+  </ItemGroup>
+
+</Project>
